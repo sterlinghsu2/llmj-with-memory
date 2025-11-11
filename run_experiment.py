@@ -1,9 +1,9 @@
 """
 Entry point script for running LLM-as-a-Judge experiments.
 """
+import os
 import argparse
 import sys
-import os
 from typing import Optional
 
 from config import ExperimentConfig, get_default_config
@@ -32,6 +32,8 @@ def create_parser() -> argparse.ArgumentParser:
                        help="Path to dataset file (auto-download if not provided)")
     parser.add_argument("--max-samples", type=int, default=None,
                        help="Maximum number of samples to process (None for all)")
+    parser.add_argument("--skip-samples", type=int, default=0,
+                       help="Number of samples to skip from start (for parallel processing)")
     parser.add_argument("--shuffle", action="store_true",
                        help="Shuffle the dataset")
     
@@ -93,6 +95,7 @@ def main():
             config.dataset.name = args.dataset
             config.dataset.data_path = args.data_path
             config.dataset.max_samples = args.max_samples
+            config.dataset.skip_samples = args.skip_samples
             config.dataset.shuffle = args.shuffle
             config.model.seed = args.seed
             config.judge.seed = args.seed

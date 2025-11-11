@@ -33,12 +33,14 @@ class ModelManager:
         """Initialize the vLLM model and sampling parameters.""" 
         print(f"Loading model: {self.config.model.name}")
         
-        # Limit to 8192 tokens to fit on V100 (Llama-3.1 defaults to 131K)
         self.model = LLM(
             model=self.config.model.name,
             seed=self.config.model.seed,
             trust_remote_code=True,
             max_model_len=8192,
+            enforce_eager=True,
+            enable_prefix_caching=False,
+            gpu_memory_utilization=0.55,
         )
         
         self.tokenizer = self.model.get_tokenizer()

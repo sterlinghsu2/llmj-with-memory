@@ -10,7 +10,7 @@ import json
 @dataclass
 class ModelConfig:
     """Configuration for the main LLM being evaluated."""
-    name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    name: str = "Qwen/Qwen2.5-3B-Instruct"  # Testing with Qwen 2.5 3B
     temperature: float = 1.0
     max_tokens: int = 1024
     num_instances: int = 8  # Number of responses to generate per question
@@ -38,6 +38,7 @@ class DatasetConfig:
     name: str = "math500"
     data_path: Optional[str] = None
     max_samples: Optional[int] = None  # None for all samples
+    skip_samples: int = 0  # Number of samples to skip from the start
     shuffle: bool = False
     seed: Optional[int] = 42
 

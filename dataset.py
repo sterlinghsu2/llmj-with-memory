@@ -222,8 +222,13 @@ class DatasetManager:
             random.seed(self.config.dataset.seed)
             random.shuffle(self.samples)
         
+        # Apply skip and max_samples (for parallel processing)
+        start_idx = self.config.dataset.skip_samples
         if self.config.dataset.max_samples:
-            self.samples = self.samples[:self.config.dataset.max_samples]
+            end_idx = start_idx + self.config.dataset.max_samples
+            self.samples = self.samples[start_idx:end_idx]
+        else:
+            self.samples = self.samples[start_idx:]
         
         return self.samples
     
