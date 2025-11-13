@@ -330,13 +330,3 @@ class ResultsAnalyzer:
             comparison['total_samples_score_based'] = len(score_based_samples)
         
         return comparison
-
-
-def create_results_collector(config) -> ResultsCollector:
-    """Factory function to create results collector."""
-    return ResultsCollector(config)
-
-
-def create_results_analyzer(collector: ResultsCollector) -> ResultsAnalyzer:
-    """Factory function to create results analyzer."""
-    return ResultsAnalyzer(collector)

@@ -9,6 +9,8 @@ venv/
 setup_env.sh
 submit_job.sh
 
+misc/
+
 experiments/*/
 !experiments/.gitkeep
 

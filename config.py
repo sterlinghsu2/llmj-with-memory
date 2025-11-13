@@ -59,6 +59,10 @@ class ExperimentConfig:
     enable_score_based: bool = True
     enable_majority_vote: bool = True  # Baseline: majority voting on extracted answers (no LLM judge)
     
+    # Streaming mode settings
+    enable_streaming_mode: bool = False  # Enable streaming mode with trajectory history
+    streaming_max_history_tokens: int = 12000  # Max tokens for trajectory history (adjusted for 16K context)
+    
     # System settings
     device: str = "cuda"
     batch_size: int = 1
@@ -122,6 +126,8 @@ class ExperimentConfig:
             'enable_best_of_n': self.enable_best_of_n,
             'enable_score_based': self.enable_score_based,
             'enable_majority_vote': self.enable_majority_vote,
+            'enable_streaming_mode': self.enable_streaming_mode,
+            'streaming_max_history_tokens': self.streaming_max_history_tokens,
             'device': self.device,
             'batch_size': self.batch_size,
             'num_workers': self.num_workers,

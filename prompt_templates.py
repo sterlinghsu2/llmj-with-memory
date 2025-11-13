@@ -20,7 +20,6 @@ def format_generation_prompt(question: str) -> str:
 def format_best_of_n_prompt(
     question: str, 
     responses: List[Any],
-    ground_truth: str,
     tokenizer: Any
 ) -> str:
     """Format prompt for best-of-N judgment using chat template.
@@ -28,7 +27,6 @@ def format_best_of_n_prompt(
     Args:
         question: The question being evaluated
         responses: List of responses to judge
-        ground_truth: The correct answer
         tokenizer: Tokenizer with chat template (if available)
         
     Returns:
@@ -73,13 +71,12 @@ Confidence: [score from 0.0 to 1.0]"""
     return prompt
 
 
-def format_score_based_prompt(question: str, response: str, ground_truth: str) -> str:
+def format_score_based_prompt(question: str, response: str) -> str:
     """Format prompt for score-based judgment using 0-10 scoring.
     
     Args:
         question: The question being evaluated
         response: The response to score
-        ground_truth: The correct answer (not used in prompt, kept for API compatibility)
         
     Returns:
         Formatted prompt string
@@ -105,5 +102,71 @@ score: Give a score from 0-10 where:
 
 confidence: Your confidence in this score assignment (0-100)."""
 
+    return prompt
+
+
+def format_streaming_best_of_n_prompt(
+    question: str,
+    responses: List[Any],
+    trajectory_history: str,
+    tokenizer: Any
+) -> str:
+    """Format prompt for streaming best-of-N judgment with trajectory history.
+    
+    Args:
+        question: The question being evaluated
+        responses: List of responses to judge
+        trajectory_history: Formatted string of previous judgments
+        tokenizer: Tokenizer with chat template (if available)
+        
+    Returns:
+        Formatted prompt string
+    """
+    # Build responses text
+    responses_text = "\n\n".join(
+        f"Response {i+1}: {response.text}" 
+        for i, response in enumerate(responses)
+    )
+    
+    # Build user message with optional history
+    if trajectory_history:
+        history_section = f"""Previous Evaluations (for context):
+{trajectory_history}
+
+---
+
+"""
+    else:
+        history_section = ""
+    
+    user_message = f"""{history_section}You are an expert judge evaluating mathematical reasoning responses.
+
+Question: {question}
+
+Here are {len(responses)} different responses to evaluate:
+
+{responses_text}
+
+Please evaluate each response and determine which one is the best. Consider:
+1. Correctness of the mathematical reasoning
+2. Clarity and completeness of explanation
+3. Logical soundness of the approach
+
+Respond in this format:
+Best Response: [number]
+Reasoning: [your detailed explanation]
+Confidence: [score from 0.0 to 1.0]"""
+
+    # Use chat template if available
+    if hasattr(tokenizer, 'apply_chat_template'):
+        messages = [{"role": "user", "content": user_message}]
+        prompt = tokenizer.apply_chat_template(
+            messages, 
+            tokenize=False, 
+            add_generation_prompt=True
+        )
+    else:
+        prompt = user_message
+    
     return prompt
 

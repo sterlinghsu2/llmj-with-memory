@@ -37,10 +37,10 @@ class ModelManager:
             model=self.config.model.name,
             seed=self.config.model.seed,
             trust_remote_code=True,
-            max_model_len=8192,
+            max_model_len=16384,  # 16K context - safe for FlexAttention on CC 7.5
             enforce_eager=True,
             enable_prefix_caching=False,
-            gpu_memory_utilization=0.55,
+            gpu_memory_utilization=0.50,
         )
         
         self.tokenizer = self.model.get_tokenizer()
@@ -101,25 +101,4 @@ class ModelManager:
             responses.append(response)
         
         return responses
-    
-    def generate_batch_responses(self, samples: List[DataSample]) -> Dict[str, List[GeneratedResponse]]:
-        """Generate responses for multiple samples."""
-        all_responses = {}
-        
-        if self.config.verbose:
-            print(f"Generating responses for {len(samples)} samples...")
-        
-        for i, sample in enumerate(samples):
-            if self.config.verbose and i % 10 == 0:
-                print(f"Processing sample {i+1}/{len(samples)}")
-            
-            responses = self.generate_responses(sample)
-            all_responses[sample.sample_id] = responses
-        
-        return all_responses
-
-
-def create_model_manager(config) -> ModelManager:
-    """Factory function to create model manager."""
-    return ModelManager(config)
 

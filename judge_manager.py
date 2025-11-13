@@ -38,11 +38,10 @@ class JudgeModelManager:
     def judge_best_of_n(
         self, 
         question: str, 
-        responses: List[GeneratedResponse], 
-        ground_truth: str
+        responses: List[GeneratedResponse]
     ) -> Tuple[int, str, float]:
         """Judge which response is best among N responses."""
-        prompt = format_best_of_n_prompt(question, responses, ground_truth, self.tokenizer)
+        prompt = format_best_of_n_prompt(question, responses, self.tokenizer)
         outputs = self.model.generate([prompt], self.sampling_params)
         judgment = outputs[0].outputs[0].text.strip()
         best_idx, reasoning, confidence = self._parse_best_of_n_judgment(judgment)
@@ -51,37 +50,14 @@ class JudgeModelManager:
     def judge_score_based(
         self, 
         question: str, 
-        response: GeneratedResponse,
-        ground_truth: str
+        response: GeneratedResponse
     ) -> Tuple[float, str]:
         """Judge a single response and assign a score (0-10)."""
-        prompt = format_score_based_prompt(question, response.text, ground_truth)
+        prompt = format_score_based_prompt(question, response.text)
         outputs = self.model.generate([prompt], self.sampling_params)
         judgment = outputs[0].outputs[0].text.strip()
         score, reasoning = self._parse_score_based_judgment(judgment)
         return score, reasoning
-    
-    def judge_score_based_batch(
-        self, 
-        question: str, 
-        responses: List[GeneratedResponse],
-        ground_truth: str
-    ) -> List[Tuple[float, str]]:
-        """Judge multiple responses in a single batch using vLLM batching."""
-        prompts = [
-            format_score_based_prompt(question, resp.text, ground_truth) 
-            for resp in responses
-        ]
-        
-        outputs = self.model.generate(prompts, self.sampling_params)
-        
-        results = []
-        for output in outputs:
-            judgment = output.outputs[0].text.strip()
-            score, reasoning = self._parse_score_based_judgment(judgment)
-            results.append((score, reasoning))
-        
-        return results
     
     def _parse_best_of_n_judgment(self, judgment: str) -> Tuple[int, str, float]:
         """Parse best-of-N judgment and extract index, reasoning, confidence."""
@@ -90,20 +66,39 @@ class JudgeModelManager:
         reasoning = ""
         confidence = 0.5
         
+        # Track if we're currently collecting reasoning text
+        collecting_reasoning = False
+        reasoning_lines = []
+        
         for line in lines:
-            line = line.strip()
-            if line.startswith("Best Response:"):
+            line_stripped = line.strip()
+            
+            if line_stripped.startswith("Best Response:"):
                 try:
-                    best_idx = int(line.split(":")[1].strip()) - 1
+                    best_idx = int(line_stripped.split(":")[1].strip()) - 1
                 except (ValueError, IndexError):
                     best_idx = 0
-            elif line.startswith("Reasoning:"):
-                reasoning = line.split(":", 1)[1].strip()
-            elif line.startswith("Confidence:"):
+                collecting_reasoning = False
+            elif line_stripped.startswith("Reasoning:"):
+                # Start collecting reasoning
+                collecting_reasoning = True
+                # Get any text on the same line after "Reasoning:"
+                first_part = line_stripped.split(":", 1)[1].strip()
+                if first_part:
+                    reasoning_lines.append(first_part)
+            elif line_stripped.startswith("Confidence:"):
+                # Stop collecting reasoning
+                collecting_reasoning = False
                 try:
-                    confidence = float(line.split(":")[1].strip())
+                    confidence = float(line_stripped.split(":")[1].strip())
                 except (ValueError, IndexError):
                     confidence = 0.5
+            elif collecting_reasoning and line_stripped:
+                # Continue collecting reasoning lines
+                reasoning_lines.append(line_stripped)
+        
+        # Join all reasoning lines
+        reasoning = " ".join(reasoning_lines)
         
         return max(0, best_idx), reasoning, confidence
     
@@ -140,9 +135,4 @@ class JudgeModelManager:
             full_reasoning += f" | Reasoning: {reasoning}"
         
         return score, full_reasoning
-
-
-def create_judge_manager(config, shared_model: LLM) -> JudgeModelManager:
-    """Factory function to create judge manager."""
-    return JudgeModelManager(config, shared_model)
 

@@ -56,8 +56,7 @@ class BestOfNJudge(BaseJudge):
         
         best_idx, reasoning, confidence = self.judge_manager.judge_best_of_n(
             question=sample.question,
-            responses=responses,
-            ground_truth=sample.answer
+            responses=responses
         )
         
         if not (0 <= best_idx < len(responses)):
@@ -102,38 +101,3 @@ class BestOfNJudge(BaseJudge):
             print(f"  Pass@N: {'Yes ✓' if pass_at_n else 'No ✗'}")
         
         return result
-    
-    def evaluate_batch(self, samples_and_responses: List[tuple]) -> List[BestOfNResult]:
-        """
-        Evaluate multiple samples in batch.
-        
-        Args:
-            samples_and_responses: List of (sample, responses) tuples
-            
-        Returns:
-            List of BestOfNResult objects
-        """
-        results = []
-        
-        for sample, responses in samples_and_responses:
-            try:
-                result = self.evaluate(sample, responses)
-                results.append(result)
-            except Exception as e:
-                self.logger.error(f"Error evaluating sample {sample.sample_id}: {e}")
-                # Create a fallback result
-                fallback_result = BestOfNResult(
-                    sample_id=sample.sample_id,
-                    method="best_of_n",
-                    best_response_idx=0,
-                    best_response=responses[0] if responses else None,
-                    judge_reasoning=f"Error during evaluation: {e}",
-                    confidence=0.0,
-                    all_responses=responses,
-                    is_correct=False,
-                    verification_reasoning="Evaluation error, no verification performed",
-                    metadata={'error': str(e)}
-                )
-                results.append(fallback_result)
-        
-        return results

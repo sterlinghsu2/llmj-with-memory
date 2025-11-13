@@ -80,8 +80,14 @@ class ExperimentPipeline:
             self.judge_manager = JudgeModelManager(self.config, shared_model=self.model_manager.model)
             
             if self.config.enable_best_of_n:
-                self.logger.info("Initializing Best-of-N judge...")
-                self.best_of_n_judge = BestOfNJudge(self.config, self.judge_manager)
+                # Use streaming judge if streaming mode is enabled
+                if self.config.enable_streaming_mode:
+                    self.logger.info("Initializing Streaming Best-of-N judge...")
+                    from judges.streaming_best_of_n_judge import StreamingBestOfNJudge
+                    self.best_of_n_judge = StreamingBestOfNJudge(self.config, self.judge_manager)
+                else:
+                    self.logger.info("Initializing Best-of-N judge...")
+                    self.best_of_n_judge = BestOfNJudge(self.config, self.judge_manager)
             
             if self.config.enable_score_based:
                 self.logger.info("Initializing Score-based judge...")
@@ -173,8 +179,6 @@ class ExperimentPipeline:
             self.logger.info("Saving results...")
             saved_files = self.results_collector.save_results()
             
-            plot_files = {}
-            
             self.end_time = time.time()
             total_time = self.end_time - self.start_time
             
@@ -191,7 +195,6 @@ class ExperimentPipeline:
                     'end_time': self.end_time,
                 },
                 'saved_files': saved_files,
-                'plot_files': plot_files,
                 'sample_results': all_sample_results,
             }
             

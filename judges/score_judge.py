@@ -60,8 +60,7 @@ class ScoreBasedJudge(BaseJudge):
             try:
                 score, reasoning = self.judge_manager.judge_score_based(
                     question=sample.question,
-                    response=response,
-                    ground_truth=sample.answer
+                    response=response
                 )
                 
                 scores.append(score)
@@ -122,40 +121,4 @@ class ScoreBasedJudge(BaseJudge):
             print(f"  Pass@N: {'Yes ✓' if pass_at_n else 'No ✗'}")
         
         return result
-    
-    def evaluate_batch(self, samples_and_responses: List[tuple]) -> List[ScoreBasedResult]:
-        """
-        Evaluate multiple samples in batch.
-        
-        Args:
-            samples_and_responses: List of (sample, responses) tuples
-            
-        Returns:
-            List of ScoreBasedResult objects
-        """
-        results = []
-        
-        for sample, responses in samples_and_responses:
-            try:
-                result = self.evaluate(sample, responses)
-                results.append(result)
-            except Exception as e:
-                self.logger.error(f"Error evaluating sample {sample.sample_id}: {e}")
-                # Create a fallback result
-                fallback_result = ScoreBasedResult(
-                    sample_id=sample.sample_id,
-                    method="score_based",
-                    scores=[0.0] * len(responses) if responses else [],
-                    reasoning=[f"Error during evaluation: {e}"] * len(responses) if responses else [],
-                    responses=responses,
-                    average_score=0.0,
-                    best_score=0.0,
-                    worst_score=0.0,
-                    best_response_idx=0,
-                    is_correct=False,
-                    verification_reasoning="Evaluation error, no verification performed",
-                    metadata={'error': str(e)}
-                )
-                results.append(fallback_result)
-        
-        return results
+

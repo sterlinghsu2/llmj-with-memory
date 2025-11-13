@@ -156,38 +156,4 @@ class MajorityVoteJudge(BaseJudge):
             print(f"  Pass@N: {'Yes ✓' if pass_at_n else 'No ✗'}")
         
         return result
-    
-    def evaluate_batch(self, samples_and_responses: List[tuple]) -> List[MajorityVoteResult]:
-        """
-        Evaluate a batch of samples with their responses.
-        
-        Args:
-            samples_and_responses: List of (sample, responses) tuples
-            
-        Returns:
-            List of MajorityVoteResult objects
-        """
-        results = []
-        
-        for sample, responses in samples_and_responses:
-            try:
-                result = self.evaluate(sample, responses)
-                results.append(result)
-            except Exception as e:
-                self.logger.error(f"Error evaluating sample {sample.sample_id}: {e}")
-                # Create a fallback result
-                fallback_result = MajorityVoteResult(
-                    sample_id=sample.sample_id,
-                    method="majority_vote",
-                    extracted_answers=[],
-                    answer_counts={},
-                    majority_answer="",
-                    majority_count=0,
-                    responses=responses,
-                    is_correct=False,
-                    verification_reasoning=f"Evaluation error: {e}",
-                    metadata={'error': str(e)}
-                )
-                results.append(fallback_result)
-        
-        return results
+

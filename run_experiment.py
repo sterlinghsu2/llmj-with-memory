@@ -42,6 +42,10 @@ def create_parser() -> argparse.ArgumentParser:
                        help="Disable Best-of-N evaluation")
     parser.add_argument("--disable-score-based", action="store_true",
                        help="Disable score-based evaluation")
+    parser.add_argument("--streaming-mode", action="store_true",
+                       help="Enable streaming mode with trajectory history (Best-of-N only)")
+    parser.add_argument("--streaming-max-history-tokens", type=int, default=None,
+                       help="Maximum tokens for trajectory history in streaming mode (uses config default if not specified)")
     
     # System settings
     parser.add_argument("--batch-size", type=int, default=1,
@@ -87,6 +91,9 @@ def main():
             config.output_dir = args.output_dir
             config.enable_best_of_n = not args.disable_best_of_n
             config.enable_score_based = not args.disable_score_based
+            config.enable_streaming_mode = args.streaming_mode
+            if args.streaming_max_history_tokens is not None:
+                config.streaming_max_history_tokens = args.streaming_max_history_tokens
             config.batch_size = args.batch_size
             config.verbose = args.verbose
             config.save_intermediate_results = not args.no_intermediate_save
@@ -120,6 +127,9 @@ def main():
         print(f"  Best-of-N: {config.enable_best_of_n}")
         print(f"  Score-based: {config.enable_score_based}")
         print(f"  Majority Vote: {config.enable_majority_vote}")
+        print(f"  Streaming Mode: {config.enable_streaming_mode}")
+        if config.enable_streaming_mode:
+            print(f"    Max History Tokens: {config.streaming_max_history_tokens}")
         print(f"  Verification: Math-Verify (always enabled)")
         print(f"  Output Dir: {config.experiment_dir}")
         print()
@@ -132,18 +142,11 @@ def main():
         
         # Print file locations
         saved_files = results.get('saved_files', {})
-        # plot_files = results.get('plot_files', {})  # Disabled - no plotting
         
         if saved_files:
             print("\nSaved files:")
             for key, path in saved_files.items():
                 print(f"  {key}: {path}")
-        
-        # Plotting disabled
-        # if plot_files:
-        #     print("\nGenerated plots:")
-        #     for key, path in plot_files.items():
-        #         print(f"  {key}: {path}")
         
     except KeyboardInterrupt:
         print("\nExperiment interrupted by user")
