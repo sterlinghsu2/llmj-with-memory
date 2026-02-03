@@ -99,10 +99,7 @@ class ScoreBasedJudge(BaseJudge):
             scores=scores,
             reasoning=reasoning_list,
             responses=responses,
-            average_score=0.0,
-            best_score=0.0,
-            worst_score=0.0,
-            best_response_idx=0,
+            # average_score, best_score, worst_score, best_response_idx computed in __post_init__
             is_correct=is_correct,
             verification_reasoning=verification_reasoning,
             pass_at_n=pass_at_n,

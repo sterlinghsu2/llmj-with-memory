@@ -46,6 +46,13 @@ def create_parser() -> argparse.ArgumentParser:
                        help="Enable streaming mode with trajectory history (Best-of-N only)")
     parser.add_argument("--streaming-max-history-tokens", type=int, default=None,
                        help="Maximum tokens for trajectory history in streaming mode (uses config default if not specified)")
+    parser.add_argument("--streaming-max-history-entries", type=int, default=None,
+                       help="Maximum number of trajectory entries (if set, overrides token-based limit)")
+    parser.add_argument("--streaming-trajectory-mode", type=str, default="full",
+                       choices=["full", "minimal"],
+                       help="Trajectory mode: 'full' includes all responses, 'minimal' includes only question + reasoning")
+    parser.add_argument("--streaming-correct-only", action="store_true",
+                       help="Only include correct judgments in trajectory history")
     
     # System settings
     parser.add_argument("--batch-size", type=int, default=1,
@@ -94,6 +101,10 @@ def main():
             config.enable_streaming_mode = args.streaming_mode
             if args.streaming_max_history_tokens is not None:
                 config.streaming_max_history_tokens = args.streaming_max_history_tokens
+            if args.streaming_max_history_entries is not None:
+                config.streaming_max_history_entries = args.streaming_max_history_entries
+            config.streaming_trajectory_mode = args.streaming_trajectory_mode
+            config.streaming_correct_only = args.streaming_correct_only
             config.batch_size = args.batch_size
             config.verbose = args.verbose
             config.save_intermediate_results = not args.no_intermediate_save
@@ -129,7 +140,12 @@ def main():
         print(f"  Majority Vote: {config.enable_majority_vote}")
         print(f"  Streaming Mode: {config.enable_streaming_mode}")
         if config.enable_streaming_mode:
-            print(f"    Max History Tokens: {config.streaming_max_history_tokens}")
+            if config.streaming_max_history_entries is not None:
+                print(f"    Max History Entries: {config.streaming_max_history_entries}")
+            else:
+                print(f"    Max History Tokens: {config.streaming_max_history_tokens}")
+            print(f"    Trajectory Mode: {config.streaming_trajectory_mode}")
+            print(f"    Correct Only: {config.streaming_correct_only}")
         print(f"  Verification: Math-Verify (always enabled)")
         print(f"  Output Dir: {config.experiment_dir}")
         print()

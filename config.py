@@ -62,6 +62,9 @@ class ExperimentConfig:
     # Streaming mode settings
     enable_streaming_mode: bool = False  # Enable streaming mode with trajectory history
     streaming_max_history_tokens: int = 12000  # Max tokens for trajectory history (adjusted for 16K context)
+    streaming_max_history_entries: Optional[int] = None  # Max number of trajectory entries (None = use token limit)
+    streaming_trajectory_mode: str = "full"  # "full": all responses, "minimal": question + reasoning only
+    streaming_correct_only: bool = False  # Only include correct judgments in trajectory history
     
     # System settings
     device: str = "cuda"
@@ -128,6 +131,9 @@ class ExperimentConfig:
             'enable_majority_vote': self.enable_majority_vote,
             'enable_streaming_mode': self.enable_streaming_mode,
             'streaming_max_history_tokens': self.streaming_max_history_tokens,
+            'streaming_max_history_entries': self.streaming_max_history_entries,
+            'streaming_trajectory_mode': self.streaming_trajectory_mode,
+            'streaming_correct_only': self.streaming_correct_only,
             'device': self.device,
             'batch_size': self.batch_size,
             'num_workers': self.num_workers,

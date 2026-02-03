@@ -15,6 +15,7 @@ class BestOfNJudge(BaseJudge):
     def __init__(self, config, judge_manager):
         super().__init__(config, judge_manager)
         self.logger = logging.getLogger(__name__)
+        self.sample_count = 0  # Track number of samples processed
         
         # Initialize Math-Verify for verification
         self.math_grader = None
@@ -96,8 +97,10 @@ class BestOfNJudge(BaseJudge):
             }
         )
         
+        self.sample_count += 1
         if self.config.verbose:
-            print(f"Best-of-N: Selected response {best_idx} with confidence {confidence:.2f}")
-            print(f"  Pass@N: {'Yes ✓' if pass_at_n else 'No ✗'}")
+            num_correct = sum(response_correctness)
+            correct_str = "Correct ✓" if is_correct else "Incorrect ✗"
+            print(f"[{self.sample_count}] {sample.sample_id}: Selected {best_idx} ({correct_str}), {num_correct}/{len(responses)} correct")
         
         return result

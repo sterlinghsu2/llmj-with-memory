@@ -150,10 +150,6 @@ class MajorityVoteJudge(BaseJudge):
             }
         )
         
-        if self.config.verbose:
-            print(f"Majority Vote: {majority_answer} ({majority_count}/{len(responses)} votes)")
-            print(f"  Result: {'Correct ✓' if is_correct else 'Incorrect ✗'}")
-            print(f"  Pass@N: {'Yes ✓' if pass_at_n else 'No ✗'}")
         
         return result
 

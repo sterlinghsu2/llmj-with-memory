@@ -1,7 +1,7 @@
 """
 Streaming Best-of-N judge with trajectory history.
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 import logging
 
 from judges import BaseJudge, BestOfNResult
@@ -19,7 +19,16 @@ class StreamingBestOfNJudge(BaseJudge):
         
         # Initialize trajectory history
         self.trajectory: List[Dict[str, Any]] = []
+        self.sample_count = 0  # Track total samples processed (independent of trajectory length)
         self.max_history_tokens = config.streaming_max_history_tokens
+        self.max_history_entries = config.streaming_max_history_entries  # None = use token limit
+        self.trajectory_mode = config.streaming_trajectory_mode  # "full" or "minimal"
+        self.correct_only = config.streaming_correct_only  # Only include correct judgments in history
+        
+        # Get model context limit from the vLLM model configuration
+        # This uses the max_model_len value set in generator.py during model initialization
+        self.model_max_length = judge_manager.model.llm_engine.model_config.max_model_len
+        self.logger.info(f"Model max length: {self.model_max_length} tokens")
         
         # Initialize Math-Verify for verification
         self.math_grader = None
@@ -35,6 +44,8 @@ class StreamingBestOfNJudge(BaseJudge):
         """Evaluate all responses with trajectory history and select the best one."""
         if not responses:
             raise ValueError("No responses provided for evaluation")
+        
+        self.sample_count += 1  # Track total samples processed
         
         # Cache Math-Verify results
         response_correctness = []
@@ -59,14 +70,10 @@ class StreamingBestOfNJudge(BaseJudge):
         
         pass_at_n = any(response_correctness)
         
-        # Get trajectory history formatted as text (also calculates num_included)
-        trajectory_text, num_included, tokens_used = self._format_trajectory_for_prompt_with_stats()
-        
-        # Use streaming judge with history
-        best_idx, reasoning, confidence = self._judge_with_history(
+        # Use streaming judge with history (also formats trajectory)
+        best_idx, reasoning, confidence, num_included, tokens_used = self._judge_with_history(
             sample=sample,
-            responses=responses,
-            trajectory_text=trajectory_text
+            responses=responses
         )
         
         if not (0 <= best_idx < len(responses)):
@@ -85,6 +92,9 @@ class StreamingBestOfNJudge(BaseJudge):
             verification_reasoning = "Math-Verify not available"
         else:
             verification_reasoning = "Math-Verify result not cached"
+        
+        # Save trajectory length before adding (for accurate reporting)
+        trajectory_available = len(self.trajectory)
         
         # Add to trajectory history with full context (all responses)
         self._add_to_trajectory(
@@ -116,27 +126,55 @@ class StreamingBestOfNJudge(BaseJudge):
                 'judge_model': self.config.model.name,
                 'judge_temperature': self.config.judge.temperature,
                 'streaming_mode': True,
-                'trajectory_total_responses': len(self.trajectory) - 1,  # Before adding current
+                'trajectory_total_responses': trajectory_available,  # Entries available before this sample
                 'trajectory_included_responses': num_included,
                 'history_tokens_used': tokens_used,
+                'history_limit_type': 'entries' if self.max_history_entries is not None else 'tokens',
+                'history_entries_limit': self.max_history_entries,
                 'history_tokens_budget': self.max_history_tokens,
                 'history_utilization_pct': round(tokens_used / self.max_history_tokens * 100, 1) if self.max_history_tokens > 0 else 0,
             }
         )
         
         if self.config.verbose:
-            print(f"Streaming Best-of-N: Selected response {best_idx} with confidence {confidence:.2f}")
-            print(f"  Trajectory: {num_included}/{len(self.trajectory) - 1} responses included ({tokens_used} tokens), Pass@N: {'Yes ✓' if pass_at_n else 'No ✗'}")
+            num_correct = sum(response_correctness)
+            correct_str = "Correct ✓" if is_correct else "Incorrect ✗"
+            print(f"[{self.sample_count}] {sample.sample_id}: Selected {best_idx} ({correct_str}), {num_correct}/{len(responses)} correct, Trajectory: {num_included}/{trajectory_available}")
         
         return result
     
     def _judge_with_history(
         self, 
         sample: DataSample,
-        responses: List[GeneratedResponse],
-        trajectory_text: str
-    ) -> tuple:
-        """Call judge with trajectory history."""
+        responses: List[GeneratedResponse]
+    ) -> Tuple[int, str, float, int, int]:
+        """Call judge with trajectory history, proactively ensuring prompt fits in context.
+        
+        Returns:
+            Tuple of (best_idx, reasoning, confidence, num_included, tokens_used)
+        """
+        # Calculate base prompt size (without trajectory)
+        base_prompt = format_streaming_best_of_n_prompt(
+            question=sample.question,
+            responses=responses,
+            trajectory_history="",  # Empty trajectory for base calculation
+            tokenizer=self.judge_manager.tokenizer
+        )
+        base_tokens = len(self.judge_manager.tokenizer.encode(base_prompt))
+        
+        # Calculate available tokens for trajectory history
+        available_tokens = self.model_max_length - base_tokens
+        self.logger.debug(
+            f"Sample {sample.sample_id}: Base prompt {base_tokens} tokens, "
+            f"available for history: {available_tokens} tokens"
+        )
+        
+        # Format trajectory history to fit within available tokens
+        trajectory_text, num_included, tokens_used = self._format_trajectory_with_budget(
+            max_tokens=available_tokens
+        )
+        
+        # Build final prompt with truncated trajectory
         prompt = format_streaming_best_of_n_prompt(
             question=sample.question,
             responses=responses,
@@ -144,20 +182,44 @@ class StreamingBestOfNJudge(BaseJudge):
             tokenizer=self.judge_manager.tokenizer
         )
         
+        # Verify final prompt size
+        final_tokens = len(self.judge_manager.tokenizer.encode(prompt))
+        if final_tokens > self.model_max_length:
+            self.logger.warning(
+                f"Sample {sample.sample_id}: Final prompt ({final_tokens} tokens) exceeds "
+                f"limit ({self.model_max_length} tokens). Removing all trajectories."
+            )
+            # Fall back to no trajectories
+            trajectory_text = ""
+            num_included = 0
+            tokens_used = 0
+            prompt = format_streaming_best_of_n_prompt(
+                question=sample.question,
+                responses=responses,
+                trajectory_history="",
+                tokenizer=self.judge_manager.tokenizer
+            )
+            final_tokens = len(self.judge_manager.tokenizer.encode(prompt))
+        
+        self.logger.info(
+            f"Sample {sample.sample_id}: Added {num_included}/{len(self.trajectory)} trajectories "
+            f"(trajectory tokens: {tokens_used}, final prompt: {final_tokens} tokens)"
+        )
+        
+        # Generate judgment
         try:
             outputs = self.judge_manager.model.generate([prompt], self.judge_manager.sampling_params)
             judgment = outputs[0].outputs[0].text.strip()
             best_idx, reasoning, confidence = self.judge_manager._parse_best_of_n_judgment(judgment)
+            return best_idx, reasoning, confidence, num_included, tokens_used
         except ValueError as e:
             if "longer than the maximum model length" in str(e):
-                # Context overflow - skip this sample
-                prompt_tokens = len(self.judge_manager.tokenizer.encode(prompt))
-                print(f"[CONTEXT OVERFLOW] Sample {sample.sample_id}: prompt is {prompt_tokens} tokens, exceeds max_model_len. Skipping sample.")
-                raise  # Re-raise to let the pipeline handle it
-            else:
-                raise
-        
-        return best_idx, reasoning, confidence
+                self.logger.error(
+                    f"Sample {sample.sample_id}: Context overflow despite proactive truncation "
+                    f"(final_tokens={final_tokens}, limit={self.model_max_length}). "
+                    f"This indicates a tokenization mismatch."
+                )
+            raise
     
     def _add_to_trajectory(
         self,
@@ -170,6 +232,10 @@ class StreamingBestOfNJudge(BaseJudge):
         is_correct: bool
     ) -> None:
         """Add a judgment to the trajectory history with full context."""
+        # Skip storing incorrect trajectories when correct_only is enabled
+        if self.correct_only and not is_correct:
+            return
+        
         entry = {
             'sample_id': sample_id,
             'question': question,
@@ -181,17 +247,41 @@ class StreamingBestOfNJudge(BaseJudge):
         }
         self.trajectory.append(entry)
     
-    def _format_trajectory_for_prompt_with_stats(self) -> tuple[str, int, int]:
+    def _format_trajectory_for_prompt_with_stats(self) -> Tuple[str, int, int]:
         """Format trajectory history and return (text, num_included, tokens_used)."""
         if not self.trajectory:
             return "", 0, 0
         
-        # Simple truncation: take most recent entries that fit in token budget
+        # If max_history_entries is set, use simple entry-based limit
+        if self.max_history_entries is not None:
+            # Note: when correct_only=True, trajectory already only contains correct entries
+            entries_to_include = self.trajectory[-self.max_history_entries:] if self.max_history_entries > 0 else []
+            
+            formatted_entries = []
+            total_tokens = 0
+            for entry in entries_to_include:
+                entry_text = self._format_single_entry(entry)
+                formatted_entries.append(entry_text)
+                total_tokens += self._count_tokens(entry_text)
+            
+            num_included = len(entries_to_include)
+            trajectory_text = "\n\n".join(formatted_entries) if formatted_entries else ""
+            
+            self.logger.info(
+                f"Trajectory: {num_included}/{len(self.trajectory)} entries included "
+                f"(last {self.max_history_entries} entries, {total_tokens} tokens)"
+            )
+            
+            return trajectory_text, num_included, total_tokens
+        
+        # Otherwise use token-based truncation (legacy behavior)
+        # Note: This is only used for initial stats, actual formatting uses _format_trajectory_with_budget
         formatted_entries = []
         total_tokens = 0
         num_included = 0
         
         # Go backwards through trajectory (most recent first)
+        # Note: when correct_only=True, trajectory already only contains correct entries
         for entry in reversed(self.trajectory):
             entry_text = self._format_single_entry(entry)
             entry_tokens = self._count_tokens(entry_text)
@@ -206,30 +296,83 @@ class StreamingBestOfNJudge(BaseJudge):
         # Log trajectory usage
         total_in_history = len(self.trajectory)
         if total_in_history > 0:
+            utilization_pct = (total_tokens / self.max_history_tokens * 100) if self.max_history_tokens > 0 else 0
             self.logger.info(
                 f"Trajectory: {num_included}/{total_in_history} responses included "
                 f"({total_tokens}/{self.max_history_tokens} tokens, "
-                f"{total_tokens/self.max_history_tokens*100:.1f}% of budget)"
+                f"{utilization_pct:.1f}% of budget)"
             )
         
         trajectory_text = "\n\n".join(formatted_entries) if formatted_entries else ""
         return trajectory_text, num_included, total_tokens
     
+    def _format_trajectory_with_budget(self, max_tokens: int) -> Tuple[str, int, int]:
+        """Format trajectory history to fit within token budget (all-or-nothing per entry).
+        
+        Args:
+            max_tokens: Maximum tokens available for trajectory history
+            
+        Returns:
+            tuple: (trajectory_text, num_included, tokens_used)
+        """
+        if not self.trajectory or max_tokens <= 0:
+            return "", 0, 0
+        
+        formatted_entries = []
+        total_tokens = 0
+        num_included = 0
+        
+        # Go backwards through trajectory (most recent first), include whole entries or none
+        # Note: when correct_only=True, trajectory already only contains correct entries
+        for entry in reversed(self.trajectory):
+            entry_text = self._format_single_entry(entry)
+            entry_tokens = self._count_tokens(entry_text)
+            
+            # All-or-nothing: only include if entire entry fits
+            if total_tokens + entry_tokens <= max_tokens:
+                formatted_entries.insert(0, entry_text)  # Insert at beginning to maintain chronological order
+                total_tokens += entry_tokens
+                num_included += 1
+            else:
+                # Entry doesn't fit, stop adding more
+                self.logger.debug(
+                    f"Trajectory entry would exceed budget: {entry_tokens} tokens needed, "
+                    f"{max_tokens - total_tokens} remaining. Stopping at {num_included} entries."
+                )
+                break
+        
+        trajectory_text = "\n\n".join(formatted_entries) if formatted_entries else ""
+        
+        self.logger.debug(
+            f"Formatted {num_included}/{len(self.trajectory)} trajectories "
+            f"({total_tokens}/{max_tokens} tokens)"
+        )
+        
+        return trajectory_text, num_included, total_tokens
+    
     def _format_single_entry(self, entry: Dict[str, Any]) -> str:
-        """Format a single trajectory entry with full context (all responses)."""
+        """Format a single trajectory entry based on trajectory mode."""
         question = entry['question']
-        all_responses = entry['all_responses']
         best_idx = entry['best_response_idx']
         reasoning = entry['reasoning']
         confidence = entry['confidence']
         
-        # Format all responses
-        responses_text = []
-        for i, response in enumerate(all_responses):
-            marker = " [SELECTED]" if i == best_idx else ""
-            responses_text.append(f"Response {i+1}{marker}:\n{response}")
-        
-        return f"""Sample {entry['sample_id']}:
+        if self.trajectory_mode == "minimal":
+            # Minimal mode: Just question and reasoning
+            return f"""Sample {entry['sample_id']}:
+Question: {question}
+
+Judge's Reasoning: {reasoning}
+Confidence: {confidence:.2f}"""
+        else:
+            # Full mode: All responses included
+            all_responses = entry['all_responses']
+            responses_text = []
+            for i, response in enumerate(all_responses):
+                marker = " [SELECTED]" if i == best_idx else ""
+                responses_text.append(f"Response {i+1}{marker}:\n{response}")
+            
+            return f"""Sample {entry['sample_id']}:
 Question: {question}
 
 {chr(10).join(responses_text)}
@@ -252,5 +395,6 @@ Confidence: {confidence:.2f}"""
     def reset_trajectory(self) -> None:
         """Reset the trajectory history (useful between experiments)."""
         self.trajectory = []
+        self.sample_count = 0
         self.logger.info("Trajectory history reset")
 
