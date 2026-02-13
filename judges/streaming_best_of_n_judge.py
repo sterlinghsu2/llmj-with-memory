@@ -7,7 +7,7 @@ import logging
 from judges import BaseJudge, BestOfNResult
 from dataset import DataSample  
 from generator import GeneratedResponse
-from prompt_templates import format_streaming_best_of_n_prompt
+from prompt_templates import format_streaming_best_of_n_prompt, format_distillation_prompt
 
 
 class StreamingBestOfNJudge(BaseJudge):
@@ -22,8 +22,9 @@ class StreamingBestOfNJudge(BaseJudge):
         self.sample_count = 0  # Track total samples processed (independent of trajectory length)
         self.max_history_tokens = config.streaming_max_history_tokens
         self.max_history_entries = config.streaming_max_history_entries  # None = use token limit
-        self.trajectory_mode = config.streaming_trajectory_mode  # "full" or "minimal"
+        self.trajectory_mode = config.streaming_trajectory_mode  # "full", "minimal", or "distillation"
         self.correct_only = config.streaming_correct_only  # Only include correct judgments in history
+        self.enable_distillation = config.streaming_enable_distillation  # Generate distilled memory items
         
         # Get model context limit from the vLLM model configuration
         # This uses the max_model_len value set in generator.py during model initialization
@@ -96,6 +97,16 @@ class StreamingBestOfNJudge(BaseJudge):
         # Save trajectory length before adding (for accurate reporting)
         trajectory_available = len(self.trajectory)
         
+        # Generate distillation if enabled
+        distillation = ""
+        if self.enable_distillation:
+            distillation = self._generate_distillation(
+                sample=sample,
+                responses=responses,
+                reasoning=reasoning,
+                selected_idx=best_idx
+            )
+        
         # Add to trajectory history with full context (all responses)
         self._add_to_trajectory(
             sample_id=sample.sample_id,
@@ -104,7 +115,8 @@ class StreamingBestOfNJudge(BaseJudge):
             best_idx=best_idx,
             reasoning=reasoning,
             confidence=confidence,
-            is_correct=is_correct
+            is_correct=is_correct,
+            distillation=distillation
         )
         
         result = BestOfNResult(
@@ -133,6 +145,8 @@ class StreamingBestOfNJudge(BaseJudge):
                 'history_entries_limit': self.max_history_entries,
                 'history_tokens_budget': self.max_history_tokens,
                 'history_utilization_pct': round(tokens_used / self.max_history_tokens * 100, 1) if self.max_history_tokens > 0 else 0,
+                'distillation_enabled': self.enable_distillation,
+                'distillation': distillation if self.enable_distillation else None,
             }
         )
         
@@ -221,6 +235,44 @@ class StreamingBestOfNJudge(BaseJudge):
                 )
             raise
     
+    def _generate_distillation(
+        self,
+        sample: DataSample,
+        responses: List[GeneratedResponse],
+        reasoning: str,
+        selected_idx: int
+    ) -> str:
+        """Generate distilled memory items from judge reasoning.
+        
+        This is the second step of two-step distillation. After the judge has made
+        its selection, this method generates generalizable insights from the reasoning.
+        
+        Args:
+            sample: The data sample being evaluated
+            responses: List of candidate responses
+            reasoning: The judge's reasoning from the selection step
+            selected_idx: Index of the selected response (0-based)
+            
+        Returns:
+            Distillation text containing memory items
+        """
+        prompt = format_distillation_prompt(
+            question=sample.question,
+            responses=responses,
+            judge_reasoning=reasoning,
+            selected_idx=selected_idx,
+            tokenizer=self.judge_manager.tokenizer
+        )
+        
+        try:
+            outputs = self.judge_manager.model.generate([prompt], self.judge_manager.sampling_params)
+            distillation = outputs[0].outputs[0].text.strip()
+            self.logger.debug(f"Sample {sample.sample_id}: Generated distillation ({len(distillation)} chars)")
+            return distillation
+        except Exception as e:
+            self.logger.warning(f"Sample {sample.sample_id}: Distillation generation failed: {e}")
+            return ""
+    
     def _add_to_trajectory(
         self,
         sample_id: str,
@@ -229,9 +281,21 @@ class StreamingBestOfNJudge(BaseJudge):
         best_idx: int,
         reasoning: str,
         confidence: float,
-        is_correct: bool
+        is_correct: bool,
+        distillation: str = ""
     ) -> None:
-        """Add a judgment to the trajectory history with full context."""
+        """Add a judgment to the trajectory history with full context.
+        
+        Args:
+            sample_id: Unique identifier for the sample
+            question: The math problem
+            all_responses: List of all candidate response texts
+            best_idx: Index of the selected response
+            reasoning: The judge's reasoning for selection
+            confidence: Confidence score
+            is_correct: Whether the selection was correct
+            distillation: Distilled memory items (if distillation enabled)
+        """
         # Skip storing incorrect trajectories when correct_only is enabled
         if self.correct_only and not is_correct:
             return
@@ -244,6 +308,7 @@ class StreamingBestOfNJudge(BaseJudge):
             'reasoning': reasoning,
             'confidence': confidence,
             'is_correct': is_correct,
+            'distillation': distillation,
         }
         self.trajectory.append(entry)
     
@@ -322,9 +387,16 @@ class StreamingBestOfNJudge(BaseJudge):
         total_tokens = 0
         num_included = 0
         
+        # Determine which entries to consider (apply entry limit first, then token budget)
+        if self.max_history_entries is not None and self.max_history_entries > 0:
+            # Take only the most recent N entries
+            entries_to_consider = self.trajectory[-self.max_history_entries:]
+        else:
+            entries_to_consider = self.trajectory
+        
         # Go backwards through trajectory (most recent first), include whole entries or none
         # Note: when correct_only=True, trajectory already only contains correct entries
-        for entry in reversed(self.trajectory):
+        for entry in reversed(entries_to_consider):
             entry_text = self._format_single_entry(entry)
             entry_tokens = self._count_tokens(entry_text)
             
@@ -345,7 +417,7 @@ class StreamingBestOfNJudge(BaseJudge):
         
         self.logger.debug(
             f"Formatted {num_included}/{len(self.trajectory)} trajectories "
-            f"({total_tokens}/{max_tokens} tokens)"
+            f"({total_tokens}/{max_tokens} tokens, entry limit: {self.max_history_entries})"
         )
         
         return trajectory_text, num_included, total_tokens
@@ -357,7 +429,18 @@ class StreamingBestOfNJudge(BaseJudge):
         reasoning = entry['reasoning']
         confidence = entry['confidence']
         
-        if self.trajectory_mode == "minimal":
+        if self.trajectory_mode == "distillation":
+            # Distillation mode: Only distilled memory items (no question)
+            distillation = entry.get('distillation', '')
+            if distillation:
+                return f"""Sample {entry['sample_id']}:
+{distillation}"""
+            else:
+                # Fallback to minimal if no distillation available
+                return f"""Sample {entry['sample_id']}:
+Judge's Reasoning: {reasoning}
+Confidence: {confidence:.2f}"""
+        elif self.trajectory_mode == "minimal":
             # Minimal mode: Just question and reasoning
             return f"""Sample {entry['sample_id']}:
 Question: {question}

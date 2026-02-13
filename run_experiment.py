@@ -49,10 +49,12 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--streaming-max-history-entries", type=int, default=None,
                        help="Maximum number of trajectory entries (if set, overrides token-based limit)")
     parser.add_argument("--streaming-trajectory-mode", type=str, default="full",
-                       choices=["full", "minimal"],
-                       help="Trajectory mode: 'full' includes all responses, 'minimal' includes only question + reasoning")
+                       choices=["full", "minimal", "distillation"],
+                       help="Trajectory mode: 'full' includes all responses, 'minimal' includes only question + reasoning, 'distillation' includes distilled memory items")
     parser.add_argument("--streaming-correct-only", action="store_true",
                        help="Only include correct judgments in trajectory history")
+    parser.add_argument("--streaming-enable-distillation", action="store_true",
+                       help="Enable trajectory distillation (generates memory items from reasoning)")
     
     # System settings
     parser.add_argument("--batch-size", type=int, default=1,
@@ -105,6 +107,7 @@ def main():
                 config.streaming_max_history_entries = args.streaming_max_history_entries
             config.streaming_trajectory_mode = args.streaming_trajectory_mode
             config.streaming_correct_only = args.streaming_correct_only
+            config.streaming_enable_distillation = args.streaming_enable_distillation
             config.batch_size = args.batch_size
             config.verbose = args.verbose
             config.save_intermediate_results = not args.no_intermediate_save
@@ -146,6 +149,7 @@ def main():
                 print(f"    Max History Tokens: {config.streaming_max_history_tokens}")
             print(f"    Trajectory Mode: {config.streaming_trajectory_mode}")
             print(f"    Correct Only: {config.streaming_correct_only}")
+            print(f"    Distillation: {config.streaming_enable_distillation}")
         print(f"  Verification: Math-Verify (always enabled)")
         print(f"  Output Dir: {config.experiment_dir}")
         print()

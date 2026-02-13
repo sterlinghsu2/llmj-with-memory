@@ -1,7 +1,7 @@
 """
 Prompt templates for LLM response generation and judging.
 """
-from typing import List, Any
+from typing import List, Any, Optional
 
 
 def format_generation_prompt(question: str) -> str:
@@ -130,10 +130,11 @@ def format_streaming_best_of_n_prompt(
     
     # Build user message with optional history
     if trajectory_history:
-        history_section = f"""Previous Evaluations (for context):
+        history_section = f"""Below are evaluation insights from previous problems. 
+
 {trajectory_history}
 
----
+=== END OF PREVIOUS INSIGHTS ===
 
 """
     else:
@@ -156,6 +157,82 @@ Respond in this format:
 Best Response: [number]
 Reasoning: [your detailed explanation]
 Confidence: [score from 0.0 to 1.0]"""
+
+    # Use chat template if available
+    if hasattr(tokenizer, 'apply_chat_template'):
+        messages = [{"role": "user", "content": user_message}]
+        prompt = tokenizer.apply_chat_template(
+            messages, 
+            tokenize=False, 
+            add_generation_prompt=True
+        )
+    else:
+        prompt = user_message
+    
+    return prompt
+
+
+def format_distillation_prompt(
+    question: str,
+    responses: List[Any],
+    judge_reasoning: str,
+    selected_idx: int,
+    tokenizer: Any
+) -> str:
+    """Format prompt for distilling judge reasoning into generalizable memory items.
+    
+    This is the second step in the two-step distillation process. After the judge
+    has made its selection, this prompt asks it to extract transferable insights
+    from its reasoning.
+    
+    Args:
+        question: The math problem that was evaluated
+        responses: List of candidate responses that were judged
+        judge_reasoning: The judge's reasoning from the selection step
+        selected_idx: Index of the response that was selected (0-based)
+        tokenizer: Tokenizer with chat template (if available)
+        
+    Returns:
+        Formatted prompt string for distillation generation
+    """
+    # Build responses text
+    responses_text = "\n\n".join(
+        f"Response {i+1}: {response.text}" 
+        for i, response in enumerate(responses)
+    )
+    
+    user_message = f"""You just evaluated the following math problem and selected a response. Now, extract generalizable evaluation insights from your reasoning process.
+
+Question: {question}
+
+Candidate Responses:
+{responses_text}
+
+Your Selection: Response {selected_idx + 1}
+
+Your Reasoning:
+{judge_reasoning}
+
+---
+
+Based on your evaluation above, extract 1-2 memory items that capture transferable evaluation strategies. These insights should help guide future similar evaluations.
+
+Guidelines:
+- Focus on generalizable evaluation heuristics, not problem-specific details
+- Do not mention specific numbers, equations, or problem-specific content
+- Capture strategies that would transfer to other math problems
+- Include both what worked well and potential pitfalls to avoid
+
+Output Format (use exactly this structure):
+# Memory Item 1
+## Title: <concise title, 3-7 words>
+## Description: <one sentence summary>
+## Content: <1-3 sentences of generalizable evaluation insight>
+
+# Memory Item 2 (optional, only if there's a distinct second insight)
+## Title: <concise title, 3-7 words>
+## Description: <one sentence summary>
+## Content: <1-3 sentences of generalizable evaluation insight>"""
 
     # Use chat template if available
     if hasattr(tokenizer, 'apply_chat_template'):
