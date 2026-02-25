@@ -15,6 +15,7 @@ from judge_manager import JudgeModelManager
 from judges.best_of_n_judge import BestOfNJudge
 from judges.score_judge import ScoreBasedJudge
 from results import ResultsCollector, ResultsAnalyzer
+from response_pool import ResponsePoolLoader
 
 
 class ExperimentPipeline:
@@ -31,6 +32,7 @@ class ExperimentPipeline:
         self.score_based_judge = None
         self.results_collector = None
         self.results_analyzer = None
+        self.response_pool = None  # For pre-generated responses
         
         self.start_time = None
         self.end_time = None
@@ -39,8 +41,9 @@ class ExperimentPipeline:
     
     def _setup_logging(self) -> logging.Logger:
         """Set up logging for the experiment."""
-        logger = logging.getLogger(__name__)
-        logger.setLevel(logging.INFO if self.config.verbose else logging.WARNING)
+        # Configure root logger to capture logs from all modules (including judges)
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.INFO if self.config.verbose else logging.WARNING)
         
         # Ensure experiment directory exists before creating log file
         os.makedirs(self.config.experiment_dir, exist_ok=True)
@@ -56,10 +59,11 @@ class ExperimentPipeline:
         file_handler.setFormatter(formatter)
         console_handler.setFormatter(formatter)
         
-        logger.addHandler(file_handler)
-        logger.addHandler(console_handler)
+        root_logger.addHandler(file_handler)
+        root_logger.addHandler(console_handler)
         
-        return logger
+        # Return a named logger for the pipeline
+        return logging.getLogger(__name__)
     
     def initialize_components(self):
         """Initialize all pipeline components."""
@@ -72,8 +76,19 @@ class ExperimentPipeline:
             self.total_samples = len(samples)
             self.logger.info(f"Loaded {self.total_samples} samples")
             
-            self.logger.info("Loading models...")
-            self.model_manager = ModelManager(self.config)
+            # Check if using pre-generated response pool
+            if self.config.response_pool_path:
+                self.logger.info(f"Using pre-generated responses from: {self.config.response_pool_path}")
+                self.response_pool = ResponsePoolLoader(self.config.response_pool_path)
+                pool_meta = self.response_pool.get_metadata()
+                self.logger.info(f"Response pool metadata: {pool_meta.get('config', {})}")
+                
+                # Still need to load model for judging
+                self.logger.info("Loading model for judging (responses pre-generated)...")
+                self.model_manager = ModelManager(self.config)
+            else:
+                self.logger.info("Loading models...")
+                self.model_manager = ModelManager(self.config)
             
             # Judge shares model instance with generator for memory efficiency
             self.logger.info("Initializing judge with shared model instance")
@@ -114,8 +129,17 @@ class ExperimentPipeline:
         sample_results = {}
         
         try:
-            self.logger.debug(f"Generating responses for sample {sample.sample_id}")
-            responses = self.model_manager.generate_responses(sample)
+            # Load from response pool or generate new responses
+            if self.response_pool:
+                self.logger.debug(f"Loading responses from pool for sample {sample.sample_id}")
+                responses = self.response_pool.load_responses(sample)
+                if responses is None:
+                    self.logger.warning(f"Sample {sample.sample_id} not found in response pool, generating...")
+                    responses = self.model_manager.generate_responses(sample)
+            else:
+                self.logger.debug(f"Generating responses for sample {sample.sample_id}")
+                responses = self.model_manager.generate_responses(sample)
+            
             sample_results['responses'] = responses
             sample_results['num_responses'] = len(responses)
             

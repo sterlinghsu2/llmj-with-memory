@@ -37,6 +37,10 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shuffle", action="store_true",
                        help="Shuffle the dataset")
     
+    # Response pool settings
+    parser.add_argument("--response-pool", type=str, default=None,
+                       help="Path to pre-generated response pool (e.g., response_pools/math500_8responses)")
+    
     # Evaluation settings
     parser.add_argument("--disable-best-of-n", action="store_true",
                        help="Disable Best-of-N evaluation")
@@ -55,6 +59,11 @@ def create_parser() -> argparse.ArgumentParser:
                        help="Only include correct judgments in trajectory history")
     parser.add_argument("--streaming-enable-distillation", action="store_true",
                        help="Enable trajectory distillation (generates memory items from reasoning)")
+    parser.add_argument("--streaming-retrieval-mode", type=str, default="recency",
+                       choices=["recency", "similarity"],
+                       help="Retrieval mode: 'recency' uses most recent K entries, 'similarity' uses K most similar by question embedding")
+    parser.add_argument("--streaming-embedding-model", type=str, default="all-MiniLM-L6-v2",
+                       help="Sentence-transformers model for similarity-based retrieval")
     
     # System settings
     parser.add_argument("--batch-size", type=int, default=1,
@@ -108,6 +117,9 @@ def main():
             config.streaming_trajectory_mode = args.streaming_trajectory_mode
             config.streaming_correct_only = args.streaming_correct_only
             config.streaming_enable_distillation = args.streaming_enable_distillation
+            config.streaming_retrieval_mode = args.streaming_retrieval_mode
+            config.streaming_embedding_model = args.streaming_embedding_model
+            config.response_pool_path = args.response_pool
             config.batch_size = args.batch_size
             config.verbose = args.verbose
             config.save_intermediate_results = not args.no_intermediate_save
@@ -150,6 +162,11 @@ def main():
             print(f"    Trajectory Mode: {config.streaming_trajectory_mode}")
             print(f"    Correct Only: {config.streaming_correct_only}")
             print(f"    Distillation: {config.streaming_enable_distillation}")
+            print(f"    Retrieval Mode: {config.streaming_retrieval_mode}")
+            if config.streaming_retrieval_mode == "similarity":
+                print(f"    Embedding Model: {config.streaming_embedding_model}")
+        if config.response_pool_path:
+            print(f"  Response Pool: {config.response_pool_path}")
         print(f"  Verification: Math-Verify (always enabled)")
         print(f"  Output Dir: {config.experiment_dir}")
         print()

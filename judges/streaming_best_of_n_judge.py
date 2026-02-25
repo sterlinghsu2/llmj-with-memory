@@ -1,8 +1,9 @@
 """
 Streaming Best-of-N judge with trajectory history.
 """
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import logging
+import numpy as np
 
 from judges import BaseJudge, BestOfNResult
 from dataset import DataSample  
@@ -25,6 +26,25 @@ class StreamingBestOfNJudge(BaseJudge):
         self.trajectory_mode = config.streaming_trajectory_mode  # "full", "minimal", or "distillation"
         self.correct_only = config.streaming_correct_only  # Only include correct judgments in history
         self.enable_distillation = config.streaming_enable_distillation  # Generate distilled memory items
+        
+        # Similarity-based retrieval settings
+        self.retrieval_mode = config.streaming_retrieval_mode  # "recency" or "similarity"
+        self.embedding_model_name = config.streaming_embedding_model
+        self.embedding_model = None
+        self.question_embeddings: List[np.ndarray] = []  # Store embeddings for similarity retrieval
+        
+        # Load embedding model if using similarity-based retrieval
+        if self.retrieval_mode == "similarity":
+            try:
+                from sentence_transformers import SentenceTransformer
+                self.embedding_model = SentenceTransformer(self.embedding_model_name)
+                self.logger.info(f"Loaded embedding model: {self.embedding_model_name}")
+            except ImportError:
+                self.logger.error("sentence-transformers not installed. Run: pip install sentence-transformers")
+                raise ImportError("sentence-transformers required for similarity retrieval mode")
+            except Exception as e:
+                self.logger.error(f"Failed to load embedding model {self.embedding_model_name}: {e}")
+                raise
         
         # Get model context limit from the vLLM model configuration
         # This uses the max_model_len value set in generator.py during model initialization
@@ -72,7 +92,7 @@ class StreamingBestOfNJudge(BaseJudge):
         pass_at_n = any(response_correctness)
         
         # Use streaming judge with history (also formats trajectory)
-        best_idx, reasoning, confidence, num_included, tokens_used = self._judge_with_history(
+        best_idx, reasoning, confidence, num_included, tokens_used, trajectory_text = self._judge_with_history(
             sample=sample,
             responses=responses
         )
@@ -147,6 +167,7 @@ class StreamingBestOfNJudge(BaseJudge):
                 'history_utilization_pct': round(tokens_used / self.max_history_tokens * 100, 1) if self.max_history_tokens > 0 else 0,
                 'distillation_enabled': self.enable_distillation,
                 'distillation': distillation if self.enable_distillation else None,
+                'distillation_input': trajectory_text if trajectory_text else None,
             }
         )
         
@@ -161,11 +182,11 @@ class StreamingBestOfNJudge(BaseJudge):
         self, 
         sample: DataSample,
         responses: List[GeneratedResponse]
-    ) -> Tuple[int, str, float, int, int]:
+    ) -> Tuple[int, str, float, int, int, str]:
         """Call judge with trajectory history, proactively ensuring prompt fits in context.
         
         Returns:
-            Tuple of (best_idx, reasoning, confidence, num_included, tokens_used)
+            Tuple of (best_idx, reasoning, confidence, num_included, tokens_used, trajectory_text)
         """
         # Calculate base prompt size (without trajectory)
         base_prompt = format_streaming_best_of_n_prompt(
@@ -185,7 +206,8 @@ class StreamingBestOfNJudge(BaseJudge):
         
         # Format trajectory history to fit within available tokens
         trajectory_text, num_included, tokens_used = self._format_trajectory_with_budget(
-            max_tokens=available_tokens
+            max_tokens=available_tokens,
+            current_question=sample.question
         )
         
         # Build final prompt with truncated trajectory
@@ -225,7 +247,7 @@ class StreamingBestOfNJudge(BaseJudge):
             outputs = self.judge_manager.model.generate([prompt], self.judge_manager.sampling_params)
             judgment = outputs[0].outputs[0].text.strip()
             best_idx, reasoning, confidence = self.judge_manager._parse_best_of_n_judgment(judgment)
-            return best_idx, reasoning, confidence, num_included, tokens_used
+            return best_idx, reasoning, confidence, num_included, tokens_used, trajectory_text
         except ValueError as e:
             if "longer than the maximum model length" in str(e):
                 self.logger.error(
@@ -311,6 +333,73 @@ class StreamingBestOfNJudge(BaseJudge):
             'distillation': distillation,
         }
         self.trajectory.append(entry)
+        
+        # Compute and store question embedding for similarity retrieval
+        if self.retrieval_mode == "similarity" and self.embedding_model is not None:
+            embedding = self.embedding_model.encode(question, convert_to_numpy=True)
+            self.question_embeddings.append(embedding)
+    
+    def _retrieve_similar_entries(self, current_question: str, k: int) -> List[Dict[str, Any]]:
+        """Retrieve the K most similar trajectory entries based on question embedding similarity.
+        
+        Args:
+            current_question: The current question to find similar entries for
+            k: Maximum number of entries to retrieve
+            
+        Returns:
+            List of trajectory entries sorted by similarity (most similar first)
+        """
+        if not self.trajectory or not self.question_embeddings or self.embedding_model is None:
+            return []
+        
+        if k <= 0:
+            return []
+        
+        # Log current question being searched
+        q_preview = current_question[:80].replace('\n', ' ')
+        self.logger.info(f"Similarity search for: {q_preview}...")
+        
+        # Embed the current question
+        current_embedding = self.embedding_model.encode(current_question, convert_to_numpy=True)
+        
+        # Stack all stored embeddings into a matrix
+        stored_embeddings = np.stack(self.question_embeddings)
+        
+        # Compute cosine similarities
+        # Normalize vectors
+        current_norm = current_embedding / np.linalg.norm(current_embedding)
+        stored_norms = stored_embeddings / np.linalg.norm(stored_embeddings, axis=1, keepdims=True)
+        
+        # Cosine similarity = dot product of normalized vectors
+        similarities = np.dot(stored_norms, current_norm)
+        
+        # Get indices of top-K most similar (highest similarity scores)
+        if len(similarities) <= k:
+            # Return all entries sorted by similarity
+            top_indices = np.argsort(similarities)[::-1]
+        else:
+            # Get top-K indices
+            top_indices = np.argsort(similarities)[-k:][::-1]
+        
+        # Retrieve entries in order of similarity
+        similar_entries = [self.trajectory[i] for i in top_indices]
+        
+        # Log retrieval details
+        self.logger.info(
+            f"Similarity retrieval: top-{len(top_indices)} from {len(self.trajectory)} entries, "
+            f"similarity range: [{similarities[top_indices[-1]]:.3f}, {similarities[top_indices[0]]:.3f}]"
+        )
+        
+        # Log which questions were retrieved (truncated for readability)
+        for rank, idx in enumerate(top_indices):
+            entry = self.trajectory[idx]
+            q_preview = entry['question'][:80].replace('\n', ' ')
+            sim_score = similarities[idx]
+            self.logger.info(
+                f"  [{rank+1}] sim={sim_score:.3f} | {entry['sample_id']}: {q_preview}..."
+            )
+        
+        return similar_entries
     
     def _format_trajectory_for_prompt_with_stats(self) -> Tuple[str, int, int]:
         """Format trajectory history and return (text, num_included, tokens_used)."""
@@ -371,11 +460,12 @@ class StreamingBestOfNJudge(BaseJudge):
         trajectory_text = "\n\n".join(formatted_entries) if formatted_entries else ""
         return trajectory_text, num_included, total_tokens
     
-    def _format_trajectory_with_budget(self, max_tokens: int) -> Tuple[str, int, int]:
+    def _format_trajectory_with_budget(self, max_tokens: int, current_question: str = "") -> Tuple[str, int, int]:
         """Format trajectory history to fit within token budget (all-or-nothing per entry).
         
         Args:
             max_tokens: Maximum tokens available for trajectory history
+            current_question: Current question (used for similarity-based retrieval)
             
         Returns:
             tuple: (trajectory_text, num_included, tokens_used)
@@ -387,37 +477,57 @@ class StreamingBestOfNJudge(BaseJudge):
         total_tokens = 0
         num_included = 0
         
-        # Determine which entries to consider (apply entry limit first, then token budget)
-        if self.max_history_entries is not None and self.max_history_entries > 0:
-            # Take only the most recent N entries
+        # Determine which entries to consider based on retrieval mode
+        if self.retrieval_mode == "similarity" and current_question:
+            # Similarity-based retrieval: get K most similar entries
+            k = self.max_history_entries if self.max_history_entries is not None else len(self.trajectory)
+            entries_to_consider = self._retrieve_similar_entries(current_question, k)
+        elif self.max_history_entries is not None and self.max_history_entries > 0:
+            # Recency-based retrieval: take most recent N entries
             entries_to_consider = self.trajectory[-self.max_history_entries:]
         else:
             entries_to_consider = self.trajectory
         
-        # Go backwards through trajectory (most recent first), include whole entries or none
-        # Note: when correct_only=True, trajectory already only contains correct entries
-        for entry in reversed(entries_to_consider):
-            entry_text = self._format_single_entry(entry)
-            entry_tokens = self._count_tokens(entry_text)
-            
-            # All-or-nothing: only include if entire entry fits
-            if total_tokens + entry_tokens <= max_tokens:
-                formatted_entries.insert(0, entry_text)  # Insert at beginning to maintain chronological order
-                total_tokens += entry_tokens
-                num_included += 1
-            else:
-                # Entry doesn't fit, stop adding more
-                self.logger.debug(
-                    f"Trajectory entry would exceed budget: {entry_tokens} tokens needed, "
-                    f"{max_tokens - total_tokens} remaining. Stopping at {num_included} entries."
-                )
-                break
+        # For similarity mode, entries are already sorted by similarity (most similar first)
+        # For recency mode, process in reverse order (most recent first)
+        if self.retrieval_mode == "similarity":
+            # Already sorted by similarity, process in order
+            for entry in entries_to_consider:
+                entry_text = self._format_single_entry(entry)
+                entry_tokens = self._count_tokens(entry_text)
+                
+                if total_tokens + entry_tokens <= max_tokens:
+                    formatted_entries.append(entry_text)
+                    total_tokens += entry_tokens
+                    num_included += 1
+                else:
+                    self.logger.debug(
+                        f"Trajectory entry would exceed budget: {entry_tokens} tokens needed, "
+                        f"{max_tokens - total_tokens} remaining. Stopping at {num_included} entries."
+                    )
+                    break
+        else:
+            # Recency mode: go backwards through trajectory (most recent first)
+            for entry in reversed(entries_to_consider):
+                entry_text = self._format_single_entry(entry)
+                entry_tokens = self._count_tokens(entry_text)
+                
+                if total_tokens + entry_tokens <= max_tokens:
+                    formatted_entries.insert(0, entry_text)  # Insert at beginning to maintain chronological order
+                    total_tokens += entry_tokens
+                    num_included += 1
+                else:
+                    self.logger.debug(
+                        f"Trajectory entry would exceed budget: {entry_tokens} tokens needed, "
+                        f"{max_tokens - total_tokens} remaining. Stopping at {num_included} entries."
+                    )
+                    break
         
         trajectory_text = "\n\n".join(formatted_entries) if formatted_entries else ""
         
         self.logger.debug(
             f"Formatted {num_included}/{len(self.trajectory)} trajectories "
-            f"({total_tokens}/{max_tokens} tokens, entry limit: {self.max_history_entries})"
+            f"({total_tokens}/{max_tokens} tokens, retrieval: {self.retrieval_mode}, entry limit: {self.max_history_entries})"
         )
         
         return trajectory_text, num_included, total_tokens
@@ -478,6 +588,7 @@ Confidence: {confidence:.2f}"""
     def reset_trajectory(self) -> None:
         """Reset the trajectory history (useful between experiments)."""
         self.trajectory = []
+        self.question_embeddings = []
         self.sample_count = 0
         self.logger.info("Trajectory history reset")
 

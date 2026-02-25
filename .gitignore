@@ -10,8 +10,10 @@ setup_env.sh
 submit_job.sh
 
 misc/
-
-experiments/*/
+response_pools/
+dashboard/
+archive_experiments/
+experiments/
 !experiments/.gitkeep
 
 *.log

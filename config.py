@@ -59,6 +59,9 @@ class ExperimentConfig:
     enable_score_based: bool = True
     enable_majority_vote: bool = True  # Baseline: majority voting on extracted answers (no LLM judge)
     
+    # Response pool settings (for using pre-generated responses)
+    response_pool_path: Optional[str] = None  # Path to pre-generated response pool (e.g., "response_pools/math500_8responses")
+    
     # Streaming mode settings
     enable_streaming_mode: bool = False  # Enable streaming mode with trajectory history
     streaming_max_history_tokens: int = 12000  # Max tokens for trajectory history (adjusted for 16K context)
@@ -66,6 +69,8 @@ class ExperimentConfig:
     streaming_trajectory_mode: str = "full"  # "full": all responses, "minimal": question + reasoning only, "distillation": distilled memory items
     streaming_correct_only: bool = False  # Only include correct judgments in trajectory history
     streaming_enable_distillation: bool = False  # Enable trajectory distillation (generates memory items from reasoning)
+    streaming_retrieval_mode: str = "recency"  # "recency": most recent K entries, "similarity": most similar K by question embedding
+    streaming_embedding_model: str = "all-MiniLM-L6-v2"  # Sentence-transformers model for similarity retrieval
     
     # System settings
     device: str = "cuda"
@@ -130,12 +135,15 @@ class ExperimentConfig:
             'enable_best_of_n': self.enable_best_of_n,
             'enable_score_based': self.enable_score_based,
             'enable_majority_vote': self.enable_majority_vote,
+            'response_pool_path': self.response_pool_path,
             'enable_streaming_mode': self.enable_streaming_mode,
             'streaming_max_history_tokens': self.streaming_max_history_tokens,
             'streaming_max_history_entries': self.streaming_max_history_entries,
             'streaming_trajectory_mode': self.streaming_trajectory_mode,
             'streaming_correct_only': self.streaming_correct_only,
             'streaming_enable_distillation': self.streaming_enable_distillation,
+            'streaming_retrieval_mode': self.streaming_retrieval_mode,
+            'streaming_embedding_model': self.streaming_embedding_model,
             'device': self.device,
             'batch_size': self.batch_size,
             'num_workers': self.num_workers,
