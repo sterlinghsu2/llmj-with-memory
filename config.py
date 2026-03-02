@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 import json
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 @dataclass
 class ModelConfig:
@@ -72,6 +76,12 @@ class ExperimentConfig:
     streaming_retrieval_mode: str = "recency"  # "recency": most recent K entries, "similarity": most similar K by question embedding
     streaming_embedding_model: str = "all-MiniLM-L6-v2"  # Sentence-transformers model for similarity retrieval
     
+    # Inference backend settings
+    inference_backend: str = "local"  # "local" (vLLM on GPU) or "api" (remote OpenAI-compatible server)
+    api_base_url: Optional[str] = None
+    api_key: str = "none"
+    api_max_model_len: Optional[int] = None  # Context window override for API (defaults to 16384 if not set)
+    
     # System settings
     device: str = "cuda"
     batch_size: int = 1
@@ -82,6 +92,10 @@ class ExperimentConfig:
     def __post_init__(self):
         """Initialize experiment directory path (directories created on-demand)."""
         self.experiment_dir = os.path.join(self.output_dir, self.experiment_name)
+        if self.api_base_url is None:
+            self.api_base_url = os.environ.get('API_BASE_URL')
+        if self.api_key == "none":
+            self.api_key = os.environ.get('API_KEY', 'none')
 
     def save(self, filepath: Optional[str] = None) -> str:
         """Save configuration to JSON file."""
@@ -144,6 +158,7 @@ class ExperimentConfig:
             'streaming_enable_distillation': self.streaming_enable_distillation,
             'streaming_retrieval_mode': self.streaming_retrieval_mode,
             'streaming_embedding_model': self.streaming_embedding_model,
+            'inference_backend': self.inference_backend,
             'device': self.device,
             'batch_size': self.batch_size,
             'num_workers': self.num_workers,

@@ -46,9 +46,7 @@ class StreamingBestOfNJudge(BaseJudge):
                 self.logger.error(f"Failed to load embedding model {self.embedding_model_name}: {e}")
                 raise
         
-        # Get model context limit from the vLLM model configuration
-        # This uses the max_model_len value set in generator.py during model initialization
-        self.model_max_length = judge_manager.model.llm_engine.model_config.max_model_len
+        self.model_max_length = judge_manager.backend.max_model_len
         self.logger.info(f"Model max length: {self.model_max_length} tokens")
         
         # Initialize Math-Verify for verification
@@ -188,14 +186,17 @@ class StreamingBestOfNJudge(BaseJudge):
         Returns:
             Tuple of (best_idx, reasoning, confidence, num_included, tokens_used, trajectory_text)
         """
+        backend = self.judge_manager.backend
+
         # Calculate base prompt size (without trajectory)
-        base_prompt = format_streaming_best_of_n_prompt(
+        base_content = format_streaming_best_of_n_prompt(
             question=sample.question,
             responses=responses,
-            trajectory_history="",  # Empty trajectory for base calculation
-            tokenizer=self.judge_manager.tokenizer
+            trajectory_history="",
         )
-        base_tokens = len(self.judge_manager.tokenizer.encode(base_prompt))
+        base_messages = [{"role": "user", "content": base_content}]
+        base_prompt = backend.format_prompt(base_messages)
+        base_tokens = backend.count_tokens(base_prompt)
         
         # Calculate available tokens for trajectory history
         available_tokens = self.model_max_length - base_tokens
@@ -210,32 +211,32 @@ class StreamingBestOfNJudge(BaseJudge):
             current_question=sample.question
         )
         
-        # Build final prompt with truncated trajectory
-        prompt = format_streaming_best_of_n_prompt(
+        # Build final prompt with trajectory
+        final_content = format_streaming_best_of_n_prompt(
             question=sample.question,
             responses=responses,
             trajectory_history=trajectory_text,
-            tokenizer=self.judge_manager.tokenizer
         )
-        
-        # Verify final prompt size
-        final_tokens = len(self.judge_manager.tokenizer.encode(prompt))
+        final_messages = [{"role": "user", "content": final_content}]
+        final_prompt = backend.format_prompt(final_messages)
+        final_tokens = backend.count_tokens(final_prompt)
+
         if final_tokens > self.model_max_length:
             self.logger.warning(
                 f"Sample {sample.sample_id}: Final prompt ({final_tokens} tokens) exceeds "
                 f"limit ({self.model_max_length} tokens). Removing all trajectories."
             )
-            # Fall back to no trajectories
             trajectory_text = ""
             num_included = 0
             tokens_used = 0
-            prompt = format_streaming_best_of_n_prompt(
+            fallback_content = format_streaming_best_of_n_prompt(
                 question=sample.question,
                 responses=responses,
                 trajectory_history="",
-                tokenizer=self.judge_manager.tokenizer
             )
-            final_tokens = len(self.judge_manager.tokenizer.encode(prompt))
+            final_messages = [{"role": "user", "content": fallback_content}]
+            final_prompt = backend.format_prompt(final_messages)
+            final_tokens = backend.count_tokens(final_prompt)
         
         self.logger.info(
             f"Sample {sample.sample_id}: Added {num_included}/{len(self.trajectory)} trajectories "
@@ -244,8 +245,12 @@ class StreamingBestOfNJudge(BaseJudge):
         
         # Generate judgment
         try:
-            outputs = self.judge_manager.model.generate([prompt], self.judge_manager.sampling_params)
-            judgment = outputs[0].outputs[0].text.strip()
+            judgment = backend.generate(
+                messages=final_messages,
+                temperature=self.config.judge.temperature,
+                max_tokens=self.config.judge.max_tokens,
+                seed=self.config.judge.seed,
+            )
             best_idx, reasoning, confidence = self.judge_manager._parse_best_of_n_judgment(judgment)
             return best_idx, reasoning, confidence, num_included, tokens_used, trajectory_text
         except ValueError as e:
@@ -278,17 +283,21 @@ class StreamingBestOfNJudge(BaseJudge):
         Returns:
             Distillation text containing memory items
         """
-        prompt = format_distillation_prompt(
+        content = format_distillation_prompt(
             question=sample.question,
             responses=responses,
             judge_reasoning=reasoning,
             selected_idx=selected_idx,
-            tokenizer=self.judge_manager.tokenizer
         )
+        messages = [{"role": "user", "content": content}]
         
         try:
-            outputs = self.judge_manager.model.generate([prompt], self.judge_manager.sampling_params)
-            distillation = outputs[0].outputs[0].text.strip()
+            distillation = self.judge_manager.backend.generate(
+                messages=messages,
+                temperature=self.config.judge.temperature,
+                max_tokens=self.config.judge.max_tokens,
+                seed=self.config.judge.seed,
+            )
             self.logger.debug(f"Sample {sample.sample_id}: Generated distillation ({len(distillation)} chars)")
             return distillation
         except Exception as e:
@@ -575,15 +584,14 @@ Judge's Reasoning: {reasoning}
 Confidence: {confidence:.2f}"""
     
     def _count_tokens(self, text: str) -> int:
-        """Count tokens in text using the tokenizer."""
+        """Count tokens in text using the backend's tokenizer."""
         if not text:
             return 0
         try:
-            tokens = self.judge_manager.tokenizer.encode(text)
-            return len(tokens)
+            return self.judge_manager.backend.count_tokens(text)
         except Exception as e:
             self.logger.warning(f"Error counting tokens: {e}, using character estimate")
-            return len(text) // 4  # Rough estimate
+            return len(text) // 4
     
     def reset_trajectory(self) -> None:
         """Reset the trajectory history (useful between experiments)."""

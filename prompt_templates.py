@@ -1,7 +1,7 @@
 """
 Prompt templates for LLM response generation and judging.
 """
-from typing import List, Any, Optional
+from typing import List, Any
 
 
 def format_generation_prompt(question: str) -> str:
@@ -20,25 +20,22 @@ def format_generation_prompt(question: str) -> str:
 def format_best_of_n_prompt(
     question: str, 
     responses: List[Any],
-    tokenizer: Any
 ) -> str:
-    """Format prompt for best-of-N judgment using chat template.
+    """Format the user message content for best-of-N judgment.
     
     Args:
         question: The question being evaluated
         responses: List of responses to judge
-        tokenizer: Tokenizer with chat template (if available)
         
     Returns:
-        Formatted prompt string
+        User message content string (caller wraps in messages and sends to backend)
     """
-    # Build responses text efficiently
     responses_text = "\n\n".join(
         f"Response {i+1}: {response.text}" 
         for i, response in enumerate(responses)
     )
     
-    user_message = f"""You are an expert judge evaluating mathematical reasoning responses.
+    return f"""You are an expert judge evaluating mathematical reasoning responses.
 
 Question: {question}
 
@@ -55,20 +52,6 @@ Respond in this format:
 Best Response: [number]
 Reasoning: [your detailed explanation]
 Confidence: [score from 0.0 to 1.0]"""
-
-    # Use chat template if available
-    if hasattr(tokenizer, 'apply_chat_template'):
-        messages = [{"role": "user", "content": user_message}]
-        prompt = tokenizer.apply_chat_template(
-            messages, 
-            tokenize=False, 
-            add_generation_prompt=True
-        )
-    else:
-        # Fallback to raw prompt if no chat template
-        prompt = user_message
-    
-    return prompt
 
 
 def format_score_based_prompt(question: str, response: str) -> str:
@@ -109,26 +92,22 @@ def format_streaming_best_of_n_prompt(
     question: str,
     responses: List[Any],
     trajectory_history: str,
-    tokenizer: Any
 ) -> str:
-    """Format prompt for streaming best-of-N judgment with trajectory history.
+    """Format the user message content for streaming best-of-N judgment with trajectory history.
     
     Args:
         question: The question being evaluated
         responses: List of responses to judge
         trajectory_history: Formatted string of previous judgments
-        tokenizer: Tokenizer with chat template (if available)
         
     Returns:
-        Formatted prompt string
+        User message content string (caller wraps in messages and sends to backend)
     """
-    # Build responses text
     responses_text = "\n\n".join(
         f"Response {i+1}: {response.text}" 
         for i, response in enumerate(responses)
     )
     
-    # Build user message with optional history
     if trajectory_history:
         history_section = f"""Below are evaluation insights from previous problems. 
 
@@ -140,7 +119,7 @@ def format_streaming_best_of_n_prompt(
     else:
         history_section = ""
     
-    user_message = f"""{history_section}You are an expert judge evaluating mathematical reasoning responses.
+    return f"""{history_section}You are an expert judge evaluating mathematical reasoning responses.
 
 Question: {question}
 
@@ -158,28 +137,14 @@ Best Response: [number]
 Reasoning: [your detailed explanation]
 Confidence: [score from 0.0 to 1.0]"""
 
-    # Use chat template if available
-    if hasattr(tokenizer, 'apply_chat_template'):
-        messages = [{"role": "user", "content": user_message}]
-        prompt = tokenizer.apply_chat_template(
-            messages, 
-            tokenize=False, 
-            add_generation_prompt=True
-        )
-    else:
-        prompt = user_message
-    
-    return prompt
-
 
 def format_distillation_prompt(
     question: str,
     responses: List[Any],
     judge_reasoning: str,
     selected_idx: int,
-    tokenizer: Any
 ) -> str:
-    """Format prompt for distilling judge reasoning into generalizable memory items.
+    """Format the user message content for distilling judge reasoning into memory items.
     
     This is the second step in the two-step distillation process. After the judge
     has made its selection, this prompt asks it to extract transferable insights
@@ -190,18 +155,16 @@ def format_distillation_prompt(
         responses: List of candidate responses that were judged
         judge_reasoning: The judge's reasoning from the selection step
         selected_idx: Index of the response that was selected (0-based)
-        tokenizer: Tokenizer with chat template (if available)
         
     Returns:
-        Formatted prompt string for distillation generation
+        User message content string (caller wraps in messages and sends to backend)
     """
-    # Build responses text
     responses_text = "\n\n".join(
         f"Response {i+1}: {response.text}" 
         for i, response in enumerate(responses)
     )
     
-    user_message = f"""You just evaluated the following math problem and selected a response. Now, extract generalizable evaluation insights from your reasoning process.
+    return f"""You just evaluated the following math problem and selected a response. Now, extract generalizable evaluation insights from your reasoning process.
 
 Question: {question}
 
@@ -233,17 +196,4 @@ Output Format (use exactly this structure):
 ## Title: <concise title, 3-7 words>
 ## Description: <one sentence summary>
 ## Content: <1-3 sentences of generalizable evaluation insight>"""
-
-    # Use chat template if available
-    if hasattr(tokenizer, 'apply_chat_template'):
-        messages = [{"role": "user", "content": user_message}]
-        prompt = tokenizer.apply_chat_template(
-            messages, 
-            tokenize=False, 
-            add_generation_prompt=True
-        )
-    else:
-        prompt = user_message
-    
-    return prompt
 

@@ -4,7 +4,6 @@ Judge model management for evaluating LLM responses.
 from typing import List, Tuple, Any, Optional
 import re
 
-from vllm import LLM, SamplingParams
 from generator import GeneratedResponse
 from prompt_templates import format_best_of_n_prompt, format_score_based_prompt
 
@@ -12,28 +11,14 @@ from prompt_templates import format_best_of_n_prompt, format_score_based_prompt
 class JudgeModelManager:
     """Manages LLM for judging responses.
     
-    Note: Judge always shares the same model instance as the generator,
-    but uses different sampling parameters (lower temperature for consistency).
+    Uses an inference backend (local vLLM or remote API) shared with the generator.
+    Applies different sampling parameters (lower temperature for consistency).
     """
     
-    def __init__(self, config, shared_model: LLM):
+    def __init__(self, config, backend):
         self.config = config
-        self.model = shared_model
-        self.tokenizer = self.model.get_tokenizer()
-        self.sampling_params: Optional[SamplingParams] = None
-        self._setup_sampling_params()
-    
-    def _setup_sampling_params(self) -> None:
-        """Setup sampling parameters for judging (typically more deterministic)."""
-        print(f"Configuring judge sampling params (temp={self.config.judge.temperature})")
-        
-        self.sampling_params = SamplingParams(
-            temperature=self.config.judge.temperature,
-            max_tokens=self.config.judge.max_tokens,
-            seed=self.config.judge.seed,
-        )
-        
-        print("Judge configured successfully")
+        self.backend = backend
+        print(f"Judge configured (temp={self.config.judge.temperature})")
     
     def judge_best_of_n(
         self, 
@@ -41,9 +26,14 @@ class JudgeModelManager:
         responses: List[GeneratedResponse]
     ) -> Tuple[int, str, float]:
         """Judge which response is best among N responses."""
-        prompt = format_best_of_n_prompt(question, responses, self.tokenizer)
-        outputs = self.model.generate([prompt], self.sampling_params)
-        judgment = outputs[0].outputs[0].text.strip()
+        user_content = format_best_of_n_prompt(question, responses)
+        messages = [{"role": "user", "content": user_content}]
+        judgment = self.backend.generate(
+            messages=messages,
+            temperature=self.config.judge.temperature,
+            max_tokens=self.config.judge.max_tokens,
+            seed=self.config.judge.seed,
+        )
         best_idx, reasoning, confidence = self._parse_best_of_n_judgment(judgment)
         return best_idx, reasoning, confidence
     
@@ -53,9 +43,14 @@ class JudgeModelManager:
         response: GeneratedResponse
     ) -> Tuple[float, str]:
         """Judge a single response and assign a score (0-10)."""
-        prompt = format_score_based_prompt(question, response.text)
-        outputs = self.model.generate([prompt], self.sampling_params)
-        judgment = outputs[0].outputs[0].text.strip()
+        user_content = format_score_based_prompt(question, response.text)
+        messages = [{"role": "user", "content": user_content}]
+        judgment = self.backend.generate(
+            messages=messages,
+            temperature=self.config.judge.temperature,
+            max_tokens=self.config.judge.max_tokens,
+            seed=self.config.judge.seed,
+        )
         score, reasoning = self._parse_score_based_judgment(judgment)
         return score, reasoning
     
@@ -66,7 +61,6 @@ class JudgeModelManager:
         reasoning = ""
         confidence = 0.5
         
-        # Track if we're currently collecting reasoning text
         collecting_reasoning = False
         reasoning_lines = []
         
@@ -80,24 +74,19 @@ class JudgeModelManager:
                     best_idx = 0
                 collecting_reasoning = False
             elif line_stripped.startswith("Reasoning:"):
-                # Start collecting reasoning
                 collecting_reasoning = True
-                # Get any text on the same line after "Reasoning:"
                 first_part = line_stripped.split(":", 1)[1].strip()
                 if first_part:
                     reasoning_lines.append(first_part)
             elif line_stripped.startswith("Confidence:"):
-                # Stop collecting reasoning
                 collecting_reasoning = False
                 try:
                     confidence = float(line_stripped.split(":")[1].strip())
                 except (ValueError, IndexError):
                     confidence = 0.5
             elif collecting_reasoning and line_stripped:
-                # Continue collecting reasoning lines
                 reasoning_lines.append(line_stripped)
         
-        # Join all reasoning lines
         reasoning = " ".join(reasoning_lines)
         
         return max(0, best_idx), reasoning, confidence
@@ -135,4 +124,3 @@ class JudgeModelManager:
             full_reasoning += f" | Reasoning: {reasoning}"
         
         return score, full_reasoning
-

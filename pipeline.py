@@ -12,6 +12,7 @@ from config import ExperimentConfig, get_default_config
 from dataset import DatasetManager, DataSample
 from generator import ModelManager
 from judge_manager import JudgeModelManager
+from inference_backend import create_backend
 from judges.best_of_n_judge import BestOfNJudge
 from judges.score_judge import ScoreBasedJudge
 from results import ResultsCollector, ResultsAnalyzer
@@ -76,23 +77,19 @@ class ExperimentPipeline:
             self.total_samples = len(samples)
             self.logger.info(f"Loaded {self.total_samples} samples")
             
+            # Create inference backend (loads model for local, configures API for remote)
+            self.logger.info(f"Initializing inference backend ({self.config.inference_backend})...")
+            backend = create_backend(self.config)
+            
             # Check if using pre-generated response pool
             if self.config.response_pool_path:
                 self.logger.info(f"Using pre-generated responses from: {self.config.response_pool_path}")
                 self.response_pool = ResponsePoolLoader(self.config.response_pool_path)
                 pool_meta = self.response_pool.get_metadata()
                 self.logger.info(f"Response pool metadata: {pool_meta.get('config', {})}")
-                
-                # Still need to load model for judging
-                self.logger.info("Loading model for judging (responses pre-generated)...")
-                self.model_manager = ModelManager(self.config)
-            else:
-                self.logger.info("Loading models...")
-                self.model_manager = ModelManager(self.config)
             
-            # Judge shares model instance with generator for memory efficiency
-            self.logger.info("Initializing judge with shared model instance")
-            self.judge_manager = JudgeModelManager(self.config, shared_model=self.model_manager.model)
+            self.model_manager = ModelManager(self.config, backend)
+            self.judge_manager = JudgeModelManager(self.config, backend)
             
             if self.config.enable_best_of_n:
                 # Use streaming judge if streaming mode is enabled

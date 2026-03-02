@@ -23,7 +23,18 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=str, default="experiments",
                        help="Output directory for results")
     
-    # Model settings (now configured in config.py only)
+    # Inference backend settings
+    parser.add_argument("--backend", type=str, default="local",
+                       choices=["local", "api"],
+                       help="Inference backend: 'local' (vLLM on GPU) or 'api' (remote OpenAI-compatible server)")
+    parser.add_argument("--api-base-url", type=str, default=None,
+                       help="Base URL for API backend (falls back to API_BASE_URL env var)")
+    parser.add_argument("--api-key", type=str, default=None,
+                       help="API key for API backend (falls back to API_KEY env var)")
+    parser.add_argument("--api-max-model-len", type=int, default=None,
+                       help="Context window size for API backend (defaults to 16384)")
+    parser.add_argument("--model", type=str, default=None,
+                       help="Override model name (e.g., Qwen/Qwen2.5-7B-Instruct)")
     
     # Dataset settings
     parser.add_argument("--dataset", type=str, default="math500",
@@ -104,7 +115,18 @@ def main():
         else:
             config = get_default_config()
             
-            # Override only experiment-level settings from command line
+            # Override inference backend settings from command line
+            config.inference_backend = args.backend
+            if args.api_base_url is not None:
+                config.api_base_url = args.api_base_url
+            if args.api_key is not None:
+                config.api_key = args.api_key
+            if args.api_max_model_len is not None:
+                config.api_max_model_len = args.api_max_model_len
+            if args.model is not None:
+                config.model.name = args.model
+            
+            # Override experiment-level settings from command line
             config.experiment_name = args.name
             config.output_dir = args.output_dir
             config.enable_best_of_n = not args.disable_best_of_n
@@ -138,9 +160,12 @@ def main():
             config.experiment_dir = os.path.join(config.output_dir, config.experiment_name)
             os.makedirs(config.experiment_dir, exist_ok=True)
         
-        # Print configuration summary (all model settings now from config.py)
+        # Print configuration summary
         print("\nExperiment Configuration:")
         print(f"  Name: {config.experiment_name}")
+        print(f"  Backend: {config.inference_backend}")
+        if config.inference_backend == "api":
+            print(f"  API URL: {config.api_base_url}")
         print(f"  Model: {config.model.name}")
         print(f"  Judge Model: {config.model.name}")
         print(f"  Temperature: {config.model.temperature}")
