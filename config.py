@@ -75,6 +75,9 @@ class ExperimentConfig:
     streaming_enable_distillation: bool = False  # Enable trajectory distillation (generates memory items from reasoning)
     streaming_retrieval_mode: str = "recency"  # "recency": most recent K entries, "similarity": most similar K by question embedding
     streaming_embedding_model: str = "all-MiniLM-L6-v2"  # Sentence-transformers model for similarity retrieval
+    streaming_distillation_max_retries: int = 0  # Retry judge N times when selected answer is incorrect (0 = no retries)
+    streaming_distillation_target: str = "judge"  # "judge": distill evaluation reasoning (existing), "response": distill the solution response
+    streaming_distillation_correct_fallback: bool = False  # When target="response" and judge was wrong, distill a known-correct response instead
     
     # Inference backend settings
     inference_backend: str = "local"  # "local" (vLLM on GPU) or "api" (remote OpenAI-compatible server)

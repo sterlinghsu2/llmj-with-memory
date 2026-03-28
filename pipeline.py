@@ -31,6 +31,7 @@ class ExperimentPipeline:
         self.judge_manager = None
         self.best_of_n_judge = None
         self.score_based_judge = None
+        self.majority_vote_judge = None
         self.results_collector = None
         self.results_analyzer = None
         self.response_pool = None  # For pre-generated responses

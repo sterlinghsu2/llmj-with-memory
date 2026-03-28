@@ -75,6 +75,13 @@ def create_parser() -> argparse.ArgumentParser:
                        help="Retrieval mode: 'recency' uses most recent K entries, 'similarity' uses K most similar by question embedding")
     parser.add_argument("--streaming-embedding-model", type=str, default="all-MiniLM-L6-v2",
                        help="Sentence-transformers model for similarity-based retrieval")
+    parser.add_argument("--streaming-distillation-max-retries", type=int, default=0,
+                       help="Retry judge up to N times when selected answer is incorrect (0=no retries)")
+    parser.add_argument("--streaming-distillation-target", type=str, default="judge",
+                       choices=["judge", "response"],
+                       help="Distillation target: 'judge' distills evaluation reasoning, 'response' distills the solution")
+    parser.add_argument("--streaming-distillation-correct-fallback", action="store_true",
+                       help="When distillation target is 'response' and judge was wrong, distill a correct response instead")
     
     # System settings
     parser.add_argument("--batch-size", type=int, default=1,
@@ -141,6 +148,9 @@ def main():
             config.streaming_enable_distillation = args.streaming_enable_distillation
             config.streaming_retrieval_mode = args.streaming_retrieval_mode
             config.streaming_embedding_model = args.streaming_embedding_model
+            config.streaming_distillation_max_retries = args.streaming_distillation_max_retries
+            config.streaming_distillation_target = args.streaming_distillation_target
+            config.streaming_distillation_correct_fallback = args.streaming_distillation_correct_fallback
             config.response_pool_path = args.response_pool
             config.batch_size = args.batch_size
             config.verbose = args.verbose

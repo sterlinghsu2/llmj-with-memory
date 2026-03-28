@@ -215,6 +215,8 @@ class APIBackend(InferenceBackend):
             kwargs['seed'] = seed
         if top_p is not None:
             kwargs['top_p'] = top_p
+        if top_k is not None:
+            kwargs['top_k'] = top_k
         if stop is not None:
             kwargs['stop'] = stop
 

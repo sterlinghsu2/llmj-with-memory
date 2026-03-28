@@ -197,3 +197,48 @@ Output Format (use exactly this structure):
 ## Description: <one sentence summary>
 ## Content: <1-3 sentences of generalizable evaluation insight>"""
 
+
+def format_response_distillation_prompt(
+    question: str,
+    response_text: str,
+) -> str:
+    """Format the user message content for distilling a solution response into memory items.
+    
+    Unlike format_distillation_prompt (which distills evaluation reasoning), this distills
+    the mathematical solution itself into transferable problem-solving insights.
+    
+    Args:
+        question: The math problem that was solved
+        response_text: The solution response to distill
+        
+    Returns:
+        User message content string (caller wraps in messages and sends to backend)
+    """
+    return f"""Here is a math problem and a solution. Extract generalizable problem-solving insights from the solution approach.
+
+Question: {question}
+
+Solution:
+{response_text}
+
+---
+
+Based on the solution above, extract 1-2 memory items that capture transferable mathematical problem-solving strategies. These insights should help with future similar problems.
+
+Guidelines:
+- Focus on generalizable techniques and reasoning patterns, not problem-specific details
+- Do not mention specific numbers, equations, or problem-specific content
+- Capture the high-level approach and why it works
+- Include any useful heuristics for recognizing when to apply similar strategies
+
+Output Format (use exactly this structure):
+# Memory Item 1
+## Title: <concise title, 3-7 words>
+## Description: <one sentence summary>
+## Content: <1-3 sentences of generalizable problem-solving insight>
+
+# Memory Item 2 (optional, only if there's a distinct second insight)
+## Title: <concise title, 3-7 words>
+## Description: <one sentence summary>
+## Content: <1-3 sentences of generalizable problem-solving insight>"""
+

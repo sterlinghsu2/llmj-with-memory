@@ -36,7 +36,8 @@ class BestOfNResult(JudgmentResult):
     
     def __post_init__(self):
         super().__post_init__()
-        self.method = "best_of_n"
+        if not self.method or self.method == "":
+            self.method = "best_of_n"
         if self.all_responses is None:
             self.all_responses = []
         if self.response_correctness is None:

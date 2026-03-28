@@ -8,7 +8,7 @@ import numpy as np
 from judges import BaseJudge, BestOfNResult
 from dataset import DataSample  
 from generator import GeneratedResponse
-from prompt_templates import format_streaming_best_of_n_prompt, format_distillation_prompt
+from prompt_templates import format_streaming_best_of_n_prompt, format_distillation_prompt, format_response_distillation_prompt
 
 
 class StreamingBestOfNJudge(BaseJudge):
@@ -89,19 +89,19 @@ class StreamingBestOfNJudge(BaseJudge):
         
         pass_at_n = any(response_correctness)
         
-        # Use streaming judge with history (also formats trajectory)
+        max_retries = getattr(self.config, 'streaming_distillation_max_retries', 0)
+        
+        # First attempt is the official result (used for accuracy reporting)
         best_idx, reasoning, confidence, num_included, tokens_used, trajectory_text = self._judge_with_history(
             sample=sample,
-            responses=responses
+            responses=responses,
+            seed_offset=0,
         )
         
         if not (0 <= best_idx < len(responses)):
             self.logger.warning(f"Judge returned invalid index {best_idx}, using 0")
             best_idx = 0
         
-        best_response = responses[best_idx]
-        
-        # Verify selected response
         is_correct = False
         verification_reasoning = ""
         if self.math_grader is not None and best_idx in response_results:
@@ -112,20 +112,74 @@ class StreamingBestOfNJudge(BaseJudge):
         else:
             verification_reasoning = "Math-Verify result not cached"
         
+        # Save original result for accuracy reporting
+        original_best_idx = best_idx
+        original_is_correct = is_correct
+        original_reasoning = reasoning
+        original_confidence = confidence
+        
+        # Retry for trajectory/distillation quality only (does not affect reported accuracy)
+        attempt = 0
+        if max_retries > 0 and not is_correct:
+            for attempt in range(1, max_retries + 1):
+                best_idx, reasoning, confidence, num_included, tokens_used, trajectory_text = self._judge_with_history(
+                    sample=sample,
+                    responses=responses,
+                    seed_offset=attempt,
+                )
+                
+                if not (0 <= best_idx < len(responses)):
+                    self.logger.warning(f"Judge returned invalid index {best_idx}, using 0")
+                    best_idx = 0
+                
+                is_correct = False
+                if self.math_grader is not None and best_idx in response_results:
+                    retry_score, _ = response_results[best_idx]
+                    is_correct = (retry_score == 10.0)
+                
+                if is_correct:
+                    self.logger.info(
+                        f"Sample {sample.sample_id}: Retry {attempt}/{max_retries} found correct answer "
+                        f"(idx {best_idx}), using for trajectory"
+                    )
+                    break
+                self.logger.info(
+                    f"Sample {sample.sample_id}: Retry {attempt}/{max_retries} still incorrect"
+                )
+            
+            if not is_correct:
+                # All retries failed; revert to original for trajectory too
+                best_idx = original_best_idx
+                reasoning = original_reasoning
+                confidence = original_confidence
+                is_correct = False
+        
+        best_response = responses[original_best_idx]
+        
         # Save trajectory length before adding (for accurate reporting)
         trajectory_available = len(self.trajectory)
         
-        # Generate distillation if enabled
+        # Generate distillation if enabled (uses retried result for trajectory quality)
         distillation = ""
         if self.enable_distillation:
-            distillation = self._generate_distillation(
-                sample=sample,
-                responses=responses,
-                reasoning=reasoning,
-                selected_idx=best_idx
-            )
+            distill_target = getattr(self.config, 'streaming_distillation_target', 'judge')
+            if distill_target == "response":
+                distillation = self._generate_response_distillation_entry(
+                    sample=sample,
+                    responses=responses,
+                    best_idx=best_idx,
+                    is_correct=is_correct,
+                    response_correctness=response_correctness,
+                )
+            else:
+                distillation = self._generate_distillation(
+                    sample=sample,
+                    responses=responses,
+                    reasoning=reasoning,
+                    selected_idx=best_idx
+                )
         
-        # Add to trajectory history with full context (all responses)
+        # Add to trajectory history (uses retried result for quality)
         self._add_to_trajectory(
             sample_id=sample.sample_id,
             question=sample.question,
@@ -137,15 +191,16 @@ class StreamingBestOfNJudge(BaseJudge):
             distillation=distillation
         )
         
+        # BestOfNResult uses the ORIGINAL (first attempt) result for unbiased accuracy
         result = BestOfNResult(
             sample_id=sample.sample_id,
             method="streaming_best_of_n",
-            best_response_idx=best_idx,
+            best_response_idx=original_best_idx,
             best_response=best_response,
-            judge_reasoning=reasoning,
-            confidence=confidence,
+            judge_reasoning=original_reasoning,
+            confidence=original_confidence,
             all_responses=responses,
-            is_correct=is_correct,
+            is_correct=original_is_correct,
             verification_reasoning=verification_reasoning,
             pass_at_n=pass_at_n,
             response_correctness=response_correctness,
@@ -156,7 +211,7 @@ class StreamingBestOfNJudge(BaseJudge):
                 'judge_model': self.config.model.name,
                 'judge_temperature': self.config.judge.temperature,
                 'streaming_mode': True,
-                'trajectory_total_responses': trajectory_available,  # Entries available before this sample
+                'trajectory_total_responses': trajectory_available,
                 'trajectory_included_responses': num_included,
                 'history_tokens_used': tokens_used,
                 'history_limit_type': 'entries' if self.max_history_entries is not None else 'tokens',
@@ -166,23 +221,37 @@ class StreamingBestOfNJudge(BaseJudge):
                 'distillation_enabled': self.enable_distillation,
                 'distillation': distillation if self.enable_distillation else None,
                 'distillation_input': trajectory_text if trajectory_text else None,
+                'distillation_target': getattr(self.config, 'streaming_distillation_target', 'judge'),
+                'distillation_correct_fallback': getattr(self.config, 'streaming_distillation_correct_fallback', False),
+                'judge_retries_used': attempt if max_retries > 0 else 0,
+                'judge_max_retries': max_retries,
+                'trajectory_best_idx': best_idx if max_retries > 0 and best_idx != original_best_idx else None,
             }
         )
         
         if self.config.verbose:
             num_correct = sum(response_correctness)
-            correct_str = "Correct ✓" if is_correct else "Incorrect ✗"
-            print(f"[{self.sample_count}] {sample.sample_id}: Selected {best_idx} ({correct_str}), {num_correct}/{len(responses)} correct, Trajectory: {num_included}/{trajectory_available}")
+            correct_str = "Correct ✓" if original_is_correct else "Incorrect ✗"
+            retry_info = ""
+            if max_retries > 0 and best_idx != original_best_idx:
+                retry_info = f", Trajectory uses idx {best_idx} (retry {attempt})"
+            print(f"[{self.sample_count}] {sample.sample_id}: Selected {original_best_idx} ({correct_str}), {num_correct}/{len(responses)} correct, Trajectory: {num_included}/{trajectory_available}{retry_info}")
         
         return result
     
     def _judge_with_history(
         self, 
         sample: DataSample,
-        responses: List[GeneratedResponse]
+        responses: List[GeneratedResponse],
+        seed_offset: int = 0,
     ) -> Tuple[int, str, float, int, int, str]:
         """Call judge with trajectory history, proactively ensuring prompt fits in context.
         
+        Args:
+            sample: The data sample being evaluated
+            responses: List of candidate responses
+            seed_offset: Added to the base seed for retry variation
+            
         Returns:
             Tuple of (best_idx, reasoning, confidence, num_included, tokens_used, trajectory_text)
         """
@@ -245,11 +314,12 @@ class StreamingBestOfNJudge(BaseJudge):
         
         # Generate judgment
         try:
+            seed = self.config.judge.seed + seed_offset if self.config.judge.seed is not None else None
             judgment = backend.generate(
                 messages=final_messages,
                 temperature=self.config.judge.temperature,
                 max_tokens=self.config.judge.max_tokens,
-                seed=self.config.judge.seed,
+                seed=seed,
             )
             best_idx, reasoning, confidence = self.judge_manager._parse_best_of_n_judgment(judgment)
             return best_idx, reasoning, confidence, num_included, tokens_used, trajectory_text
@@ -302,6 +372,52 @@ class StreamingBestOfNJudge(BaseJudge):
             return distillation
         except Exception as e:
             self.logger.warning(f"Sample {sample.sample_id}: Distillation generation failed: {e}")
+            return ""
+    
+    def _generate_response_distillation_entry(
+        self,
+        sample: DataSample,
+        responses: List[GeneratedResponse],
+        best_idx: int,
+        is_correct: bool,
+        response_correctness: List[bool],
+    ) -> str:
+        """Generate distillation from a solution response (not judge reasoning).
+        
+        When correct_fallback is enabled and the judge was wrong, distills a
+        known-correct response instead of the judge-selected one.
+        """
+        correct_fallback = getattr(self.config, 'streaming_distillation_correct_fallback', False)
+        
+        if correct_fallback and not is_correct and any(response_correctness):
+            target_idx = response_correctness.index(True)
+            self.logger.info(
+                f"Sample {sample.sample_id}: Judge selected {best_idx} (incorrect), "
+                f"falling back to response {target_idx} (correct) for distillation"
+            )
+        else:
+            target_idx = best_idx
+        
+        content = format_response_distillation_prompt(
+            question=sample.question,
+            response_text=responses[target_idx].text,
+        )
+        messages = [{"role": "user", "content": content}]
+        
+        try:
+            distillation = self.judge_manager.backend.generate(
+                messages=messages,
+                temperature=self.config.judge.temperature,
+                max_tokens=self.config.judge.max_tokens,
+                seed=self.config.judge.seed,
+            )
+            self.logger.debug(
+                f"Sample {sample.sample_id}: Generated response distillation "
+                f"from response {target_idx} ({len(distillation)} chars)"
+            )
+            return distillation
+        except Exception as e:
+            self.logger.warning(f"Sample {sample.sample_id}: Response distillation failed: {e}")
             return ""
     
     def _add_to_trajectory(
@@ -409,65 +525,6 @@ class StreamingBestOfNJudge(BaseJudge):
             )
         
         return similar_entries
-    
-    def _format_trajectory_for_prompt_with_stats(self) -> Tuple[str, int, int]:
-        """Format trajectory history and return (text, num_included, tokens_used)."""
-        if not self.trajectory:
-            return "", 0, 0
-        
-        # If max_history_entries is set, use simple entry-based limit
-        if self.max_history_entries is not None:
-            # Note: when correct_only=True, trajectory already only contains correct entries
-            entries_to_include = self.trajectory[-self.max_history_entries:] if self.max_history_entries > 0 else []
-            
-            formatted_entries = []
-            total_tokens = 0
-            for entry in entries_to_include:
-                entry_text = self._format_single_entry(entry)
-                formatted_entries.append(entry_text)
-                total_tokens += self._count_tokens(entry_text)
-            
-            num_included = len(entries_to_include)
-            trajectory_text = "\n\n".join(formatted_entries) if formatted_entries else ""
-            
-            self.logger.info(
-                f"Trajectory: {num_included}/{len(self.trajectory)} entries included "
-                f"(last {self.max_history_entries} entries, {total_tokens} tokens)"
-            )
-            
-            return trajectory_text, num_included, total_tokens
-        
-        # Otherwise use token-based truncation (legacy behavior)
-        # Note: This is only used for initial stats, actual formatting uses _format_trajectory_with_budget
-        formatted_entries = []
-        total_tokens = 0
-        num_included = 0
-        
-        # Go backwards through trajectory (most recent first)
-        # Note: when correct_only=True, trajectory already only contains correct entries
-        for entry in reversed(self.trajectory):
-            entry_text = self._format_single_entry(entry)
-            entry_tokens = self._count_tokens(entry_text)
-            
-            if total_tokens + entry_tokens <= self.max_history_tokens:
-                formatted_entries.insert(0, entry_text)  # Insert at beginning to maintain order
-                total_tokens += entry_tokens
-                num_included += 1
-            else:
-                break  # Stop if we exceed budget
-        
-        # Log trajectory usage
-        total_in_history = len(self.trajectory)
-        if total_in_history > 0:
-            utilization_pct = (total_tokens / self.max_history_tokens * 100) if self.max_history_tokens > 0 else 0
-            self.logger.info(
-                f"Trajectory: {num_included}/{total_in_history} responses included "
-                f"({total_tokens}/{self.max_history_tokens} tokens, "
-                f"{utilization_pct:.1f}% of budget)"
-            )
-        
-        trajectory_text = "\n\n".join(formatted_entries) if formatted_entries else ""
-        return trajectory_text, num_included, total_tokens
     
     def _format_trajectory_with_budget(self, max_tokens: int, current_question: str = "") -> Tuple[str, int, int]:
         """Format trajectory history to fit within token budget (all-or-nothing per entry).
